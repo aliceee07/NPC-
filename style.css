@@ -369,6 +369,10 @@ body {
   text-align: center;
 }
 
+.message-row.system.error .message-bubble {
+  color: #c0392b;
+}
+
 .message-bubble {
   max-width: 82%;
   padding: 6px 10px;

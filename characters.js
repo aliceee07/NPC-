@@ -54,7 +54,7 @@
   const baseCharacters = [
     {
       id: "char1",
-      name: "她",
+      name: "她·蓝",
       targetColor: "#8B9EA8",
       currentCandor: 0,
       maxCandor: MAX_CANDOR,
@@ -146,7 +146,7 @@
     },
     {
       id: "char3",
-      name: "她",
+      name: "她·紫",
       targetColor: "#7B6E8F",
       currentCandor: 0,
       maxCandor: MAX_CANDOR,
@@ -211,6 +211,7 @@
     updateCandorAndColor,
     mixColors,
     clamp,
+    hexToRgb,
   };
 })();
 

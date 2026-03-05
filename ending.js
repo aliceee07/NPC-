@@ -315,9 +315,7 @@
 
   function colorMood(hex) {
     if (!hex || hex === "#000000") return "陌生而冷淡";
-    const r = parseInt(hex.slice(1, 3), 16);
-    const g = parseInt(hex.slice(3, 5), 16);
-    const b = parseInt(hex.slice(5, 7), 16);
+    const { r, g, b } = window.NPCConfig.hexToRgb(hex);
     const br = (r + g + b) / 3;
     if (br < 40)  return "陌生而冷淡";
     if (br < 100) return "略有波动";
@@ -393,6 +391,7 @@
           systemPrompt: sp,
           messages: [{ role: "user", content: uc }],
           responseSchema: SCHEMA,
+          isEndingPhase: true,
         });
 
         p2Results[c.id] = r;
@@ -436,6 +435,7 @@
           systemPrompt: sp,
           messages: [{ role: "user", content: uc }],
           responseSchema: SCHEMA,
+          isEndingPhase: true,
         });
 
         p3Results[c.id] = r;

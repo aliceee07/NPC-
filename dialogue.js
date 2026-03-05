@@ -203,11 +203,11 @@
    * 4. Appends every call result to the AI sidebar.
    */
   async function callGemini(options) {
-    const { label, systemPrompt, messages, responseSchema } = options || {};
+    const { label, systemPrompt, messages, responseSchema, isEndingPhase } = options || {};
 
     const apiKey = getApiKey();
     if (!apiKey) {
-      const mock = mockResponse(responseSchema);
+      const mock = mockResponse(isEndingPhase);
       appendAiOutput({
         label: (label || "AI 响应") + " [本地模拟]",
         parsed: mock,
@@ -315,18 +315,18 @@
     }
   }
 
-  function mockResponse(schema) {
-    if (schema?.properties?.reply) {
+  function mockResponse(isEndingPhase) {
+    if (isEndingPhase) {
       return {
-        reply: "（本地模拟：未填写 API Key，当前显示模拟回复。）",
-        candor_level: 1,
-        closing_signal: false,
+        action: "默默站在一旁，没有立刻介入。",
+        line: "……这事儿，好像不该我管。",
+        reason: "本地模拟数据。",
       };
     }
     return {
-      action: "默默站在一旁，没有立刻介入。",
-      line: "……这事儿，好像不该我管。",
-      reason: "本地模拟数据。",
+      reply: "（本地模拟：未填写 API Key，当前显示模拟回复。）",
+      candor_level: 1,
+      closing_signal: false,
     };
   }
 
@@ -373,19 +373,25 @@
 
     history.forEach((msg) => {
       const row = document.createElement("div");
-      row.className = `message-row ${msg.role === "user" ? "player" : "npc"}`;
+      const roleClass =
+        msg.role === "user"  ? "player" :
+        msg.role === "error" ? "system error" :
+        msg.role === "system"? "system" : "npc";
+      row.className = `message-row ${roleClass}`;
 
       const bubble = document.createElement("div");
       bubble.className = "message-bubble";
 
-      const meta = document.createElement("span");
-      meta.className = "message-meta";
-      meta.textContent = msg.role === "user" ? "你" : "对方";
+      if (msg.role !== "system" && msg.role !== "error") {
+        const meta = document.createElement("span");
+        meta.className = "message-meta";
+        meta.textContent = msg.role === "user" ? "你" : "对方";
+        bubble.appendChild(meta);
+      }
 
       const text = document.createElement("div");
       text.textContent = msg.content;
 
-      bubble.appendChild(meta);
       bubble.appendChild(text);
       row.appendChild(bubble);
       container.appendChild(row);
@@ -496,7 +502,12 @@
         responseSchema: schema,
       });
 
-      appendMessage("model", result.reply || "……");
+      if (!result || !result.reply) {
+        appendMessage("error", "对方似乎没有听见你的声音，请稍后再试。");
+        return;
+      }
+
+      appendMessage("model", result.reply);
 
       /* Update candor & color from absolute candor_level returned by model */
       const level = typeof result.candor_level === "number"
@@ -520,7 +531,7 @@
       updateClosingHint();
       updateInputState(false);
     } catch (_) {
-      appendMessage("model", "对方沉默了，请稍后再试。");
+      appendMessage("error", "对方似乎没有听见你的声音，请稍后再试。");
     } finally {
       setSending(false);
     }
