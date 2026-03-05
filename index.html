@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>流浪者与三个路人 - NPC Demo</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app-container">
+
+    <header class="app-header">
+      <div class="header-left">
+        <h1>流浪者与三个路人</h1>
+        <p class="subtitle">环境和连结能否改变一个人在危机时刻的选择？</p>
+      </div>
+      <div class="header-config">
+        <div class="config-row">
+          <label for="api-key-input">API Key</label>
+          <input id="api-key-input" type="password" placeholder="粘贴 Gemini API Key（仅保存在内存）" />
+        </div>
+        <div class="config-row">
+          <label for="model-name-input">模型</label>
+          <input id="model-name-input" type="text" value="gemini-2.0-flash"
+            placeholder="如 gemini-2.0-flash / gemini-2.5-pro-preview" />
+          <span class="config-hint">支持思考的模型将在侧边栏显示思考过程</span>
+        </div>
+      </div>
+    </header>
+
+    <div class="app-body">
+
+      <main class="app-main">
+
+        <section class="scene-panel">
+          <div class="street">
+            <div class="lane lane-top"></div>
+            <div class="lane lane-bottom"></div>
+          </div>
+          <div class="characters-layer">
+            <div class="character player" id="player-circle" title="你">
+              <span class="char-label">你</span>
+            </div>
+            <div class="character npc" id="npc-1" data-character-id="char1" title="她·蓝灰">
+              <span class="char-label">她</span>
+            </div>
+            <div class="character npc" id="npc-2" data-character-id="char2" title="他·锈橙">
+              <span class="char-label">他</span>
+            </div>
+            <div class="character npc" id="npc-3" data-character-id="char3" title="她·暗紫">
+              <span class="char-label">她</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="dialogue-panel">
+          <div class="character-select">
+            <span class="select-label">对话对象：</span>
+            <button class="character-button" data-character-id="char1">她·蓝灰</button>
+            <button class="character-button" data-character-id="char2">他·锈橙</button>
+            <button class="character-button" data-character-id="char3">她·暗紫</button>
+          </div>
+
+          <div class="dialogue-history" id="dialogue-history">
+            <p class="dialogue-empty">选择角色，开始对话。</p>
+          </div>
+
+          <div class="dialogue-input-area">
+            <textarea id="player-input" placeholder="你想对他说什么？（Ctrl + Enter 发送）" rows="3"></textarea>
+            <div class="dialogue-actions">
+              <span id="closing-hint" class="closing-hint"></span>
+              <button id="send-button">说出这句</button>
+            </div>
+          </div>
+
+          <div class="timeline-actions">
+            <button id="ending-button">继续走 / 时间流逝 →</button>
+          </div>
+        </section>
+
+      </main>
+
+      <aside class="ai-sidebar" id="ai-sidebar">
+        <div class="ai-sidebar-header">
+          <h2>AI 原始输出</h2>
+          <div class="sidebar-btn-row">
+            <button id="test-gemini-btn" class="sidebar-btn">测试连接</button>
+            <button id="clear-output-btn" class="sidebar-btn">清空</button>
+          </div>
+        </div>
+        <div class="ai-output-list" id="ai-output-list">
+          <p class="ai-output-empty">对话开始后，AI 的思考过程与原始输出将在此显示。</p>
+        </div>
+      </aside>
+
+    </div>
+
+    <section class="ending-panel" id="ending-panel" hidden>
+      <h2>那一刻，他们各自做了什么</h2>
+      <div id="ending-content"></div>
+    </section>
+
+  </div>
+
+  <!-- config.local.js 在 .gitignore 里，不会上传 GitHub；
+       不存在时页面不报错，降级到输入框手动填写 -->
+  <script src="config.local.js" onerror="void 0"></script>
+  <script src="characters.js"></script>
+  <script src="dialogue.js"></script>
+  <script src="ending.js"></script>
+</body>
+</html>
