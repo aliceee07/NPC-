@@ -325,7 +325,7 @@
     }
     return {
       reply: "（本地模拟：未填写 API Key，当前显示模拟回复。）",
-      candor_level: 1,
+      touched: true,
       closing_signal: false,
     };
   }
@@ -487,10 +487,10 @@
       type: "object",
       properties: {
         reply: { type: "string" },
-        candor_level: { type: "integer" },
+        touched: { type: "boolean" },
         closing_signal: { type: "boolean" },
       },
-      required: ["reply", "candor_level", "closing_signal"],
+      required: ["reply", "touched", "closing_signal"],
     };
 
     setSending(true);
@@ -509,11 +509,9 @@
 
       appendMessage("model", result.reply);
 
-      /* Update candor & color from absolute candor_level returned by model */
-      const level = typeof result.candor_level === "number"
-        ? result.candor_level
-        : character.currentCandor || 0;
-      const updated = window.NPCConfig.updateCandorAndColor(character, level);
+      /* Step candor up or down based on whether this round touched the character */
+      const touched = result.touched === true;
+      const updated = window.NPCConfig.stepCandorAndColor(character, touched);
       const idx = state.characters.findIndex((c) => c.id === character.id);
       if (idx >= 0) state.characters[idx] = updated;
 

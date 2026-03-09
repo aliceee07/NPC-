@@ -140,14 +140,15 @@ state.dialogueHistories[charId].push({ role: "user", content })
                                (system_instruction + full history + responseSchema)
                                          │
                                          ▼ 解析 JSON
-                    { reply: string, candor_level: 0-6, closing_signal: boolean }
+                    { reply: string, touched: boolean, closing_signal: boolean }
                                          │
                  ┌───────────────────────┼────────────────────────┐
                  ▼                       ▼                        ▼
-  appendMessage("model", reply)   updateCandorAndColor()   closingStreaks[charId]++
-  → history.push(model msg)       → state.characters[i]    → if >= 3: 对话关闭
-  → renderDialogueHistory()       → currentCandor = level  → 插入系统提示消息
-    (全量重绘对话 DOM)              → currentColor = mixColors()
+  appendMessage("model", reply)   stepCandorAndColor()     closingStreaks[charId]++
+  → history.push(model msg)       → touched=true: +rise    → if >= 3: 对话关闭
+  → renderDialogueHistory()       → touched=false: -fall   → 插入系统提示消息
+    (全量重绘对话 DOM)              → updateCandorAndColor()
+                                   → currentColor = mixColors()
                                    → renderSceneCharacters()
                                      (圆圈颜色渐变 + active class)
 ```
@@ -217,19 +218,21 @@ return { ...character, currentCandor: newCandor, currentColor: newColor };
 
 项目无虚拟 DOM，使用**全量重绘**策略：每次状态变化后，对应的 `render*()` 函数清空容器 `innerHTML` 并重建所有 DOM 节点。适合当前对话数量规模，但有性能上限。
 
-### 5.6 candor_level 双向变化约定
+### 5.6 candor 代码驱动累加约定
 
-`candor_level`（0–6）支持**双向变化**：既可随对话深入而上升，也可因玩家行为退步而下降，直至归零（`mixColors` 传入 `factor=0` 时返回纯黑 `#000000`，代码已原生支持）。
+`currentCandor`（0–6）由代码完全控制，AI 不再返回绝对值，只返回 `touched: boolean`（本轮是否真实触碰角色）。`stepCandorAndColor(character, touched)` 读取角色的 `candorRates` 字段进行单步累加或衰减，再调用 `updateCandorAndColor` 计算颜色。
 
-各 NPC 的退潮行为由其 `systemPrompt` 中的 `【退潮规则】` 段落驱动，差异如下：
+**设计动机**：AI 每轮重新评估绝对坦诚度时存在随机抖动，导致颜色在相近质量的对话间跳动。改为 boolean 后，AI 只判断本轮有无连结，累加逻辑由代码保证确定性。
 
-| NPC | 退潮触发 | 退潮速率 |
-|---|---|---|
-| char1（她·蓝） | 玩家走套路、失去真实关注 | 无声，每轮 ≤ −1 |
-| char2（他） | 玩家一句"傻X感"的话即触发 | 剧烈，可单轮归零，不受常规 ±2 约束 |
-| char3（她·紫） | 玩家冷淡、减少关注 | 缓慢，每轮 ≤ −1，但持续不停 |
+各 NPC 的 `candorRates` 配置：
 
-上升方向的速率约束（所有 NPC 通用）：每轮变化幅度不超过 2，达到 5–6 级需至少 4–5 轮积累，不可单轮直跳。
+| NPC | rise | fall | 说明 |
+|---|---|---|---|
+| char1（她·蓝） | 1 | 1 | 双向缓慢，无声退潮 |
+| char2（他） | 1 | 6 | 上升缓慢，一次刺激直接归零（二元人格） |
+| char3（她·紫） | 1 | 1 | 双向缓慢，退潮一旦开始持续不停 |
+
+`candor` 可退回 0（`mixColors` 传入 `factor=0` 时返回纯黑 `#000000`，代码已原生支持）。退潮触发条件由各 NPC `systemPrompt` 的 `【退潮触发】` 段落描述，速率由 `candorRates.fall` 保证。
 
 ---
 
