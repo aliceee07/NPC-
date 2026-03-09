@@ -169,7 +169,7 @@ DialogueState.getSnapshot() → 深拷贝所有角色数据 + 对话历史
   [3] 尾声: 导出按钮 + 新对话按钮（静态）
          │
          ▼ createOverlay() → document.body 追加 #ending-overlay
-用户翻页（点击 / 60s 超时）→ advance() → renderCurrentFrame()
+用户翻页（点击 / 60s 超时）→ advance()（翻页前检查当前帧所有 slots.ready，存在未就绪 slot 时阻止翻页）→ renderCurrentFrame()
          │
          ▼ [尾声页导出按钮]
 formatExport() → Blob → URL.createObjectURL → <a> 下载 .txt
@@ -205,6 +205,7 @@ formatExport() → Blob → URL.createObjectURL → <a> 下载 .txt
 - AI 调用失败时，`callGemini` 返回 `null`，调用方（`handleSend`、`runEnding`）需检查 `null`。
 - Schema 解析失败时，`normalizeSchema()` 不抛出，返回原始值（防御性编程）。
 - API 调用失败时，`handleSend` 的 `catch` 及 null 检查会向对话框追加红色 `error` 类型的系统提示消息，告知用户发生了错误。**无全局错误边界**，对话流之外的异常仍仅打印到控制台。
+- `handleSend` 在 `await callGemini()` 返回后会核验 `state.currentCharacterId` 是否仍等于请求发起时的角色 id；若用户在等待期间切换了角色，则静默丢弃该回复，不写入历史也不触发任何渲染。
 
 ### 5.4 不可变更新模式
 

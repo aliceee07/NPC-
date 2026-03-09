@@ -493,6 +493,7 @@
       required: ["reply", "touched", "closing_signal"],
     };
 
+    const requestedCharId = character.id;
     setSending(true);
     try {
       const result = await callGemini({
@@ -501,6 +502,8 @@
         messages: history,
         responseSchema: schema,
       });
+
+      if (state.currentCharacterId !== requestedCharId) return;
 
       if (!result || !result.reply) {
         appendMessage("error", "对方似乎没有听见你的声音，请稍后再试。");

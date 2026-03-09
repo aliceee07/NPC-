@@ -53,6 +53,11 @@
   /* ─── Advance (click or timer) ─────────────────────────────── */
 
   function advance() {
+    const current = queue[cursor];
+    if (current && current.data.slots) {
+      const allReady = current.data.slots.every(s => s.ready);
+      if (!allReady) return;
+    }
     clearAutoTimer();
     const next = cursor + 1;
     if (next >= queue.length) return;
