@@ -30,10 +30,11 @@ g:\works\NPC-\
 │
 ├── index.html            # [唯一 HTML 入口] 定义完整 DOM 结构；通过顺序 <script> 标签
 │                         # 编排所有 JS 模块的加载顺序（顺序即依赖）。
+│                         # 关键 DOM 节点：#intro-overlay（入场遮罩，渲染后由内联脚本移除）
 │
-├── style.css             # [全局样式层] 所有 CSS 均在此；包含场景动画、对话气泡、
-│                         # 终局遮罩等全部视觉。无 CSS Module/BEM 方法论，直接使用
-│                         # ID/class 选择器。
+├── style.css             # [全局样式层] 所有 CSS 均在此；包含入场遮罩动画、场景动画、
+│                         # 对话气泡、终局遮罩等全部视觉。无 CSS Module/BEM 方法论，
+│                         # 直接使用 ID/class 选择器。
 │
 ├── characters.js         # [数据定义层] NPC 原始数据、颜色计算工具函数。
 │                         # 职责边界：只管"角色是什么"，不管"对话怎么发生"。
@@ -53,6 +54,10 @@ g:\works\NPC-\
 ├── config.local.js       # [本地密钥] .gitignore 排除，不提交。注入两个预设全局变量：
 │                         # window.GEMINI_PRESET_KEY, window.GEMINI_PRESET_MODEL
 │
+├── AI_DEV_WORKFLOW.md    # [AI 协作规范] 供人类开发者每次提交 AI 更新请求时使用的
+│                         # 标准化操作文档：前置动作清单、更新请求模板、
+│                         # ARCHITECTURE.md 同步规则、验收自查清单。
+│
 └── README.md             # 极简说明（当前内容极少，需补充）
 ```
 
@@ -62,10 +67,16 @@ g:\works\NPC-\
 
 ### 3.1 模块划分
 
-项目按职责被划分为 4 个核心层：
+项目按职责被划分为 5 个层次（含入场展示层）：
 
 ```
 ┌─────────────────────────────────────────────────────────┐
+│  [入场层]   index.html 内联脚本                           │
+│             #intro-overlay（全屏黑底遮罩，用后销毁）       │
+│             逐行显示叙事文案，点击/按键后淡出移除           │
+└──────────────────────┬──────────────────────────────────┘
+                       │ 退出后暴露主界面
+┌──────────────────────▼──────────────────────────────────┐
 │  [配置层]   config.local.js (可选)                       │
 │             window.GEMINI_PRESET_KEY / PRESET_MODEL      │
 └──────────────────────┬──────────────────────────────────┘
@@ -252,6 +263,14 @@ return { ...character, currentCandor: newCandor, currentColor: newColor };
 | ~~7~~ | ~~**无任何错误向用户展示机制**~~ | ~~API 调用失败（网络、Key 失效、配额超限）时用户只看到输入框无响应，无任何提示~~ **✓ 已修复：`handleSend` 的 `catch` 及 null 检查均追加红色 `error` 系统提示。** | ~~在 `handleSend` 的 `catch` 中向对话框追加错误提示消息~~ |
 | 8 | **`README.md` 内容极少** | 新开发者无法快速了解如何启动项目、如何配置 API Key | 补充：安装说明、`config.local.js` 配置方法、运行方式、项目背景 |
 | 9 | **无任何自动化测试** | 核心函数（`updateCandorAndColor`, `mixColors`, `normalizeSchema`）均为纯函数，天然可测 | 引入 `Vitest` 或原生 `Node.js test runner` 对纯函数层添加单元测试 |
+
+---
+
+---
+
+## 7. 开发协作文档
+
+本项目包含 [`AI_DEV_WORKFLOW.md`](AI_DEV_WORKFLOW.md)，规定了与 AI 协作进行结构化更新的完整工作流：前置阅读清单、更新请求模板、`ARCHITECTURE.md` 同步规则及验收自查清单。每次向 AI 提交更新请求前，建议先阅读该文档。
 
 ---
 

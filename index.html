@@ -7,6 +7,17 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
+
+  <div id="intro-overlay">
+    <div class="intro-lines">
+      <p class="intro-line">你好像掉进了一个不知名的地方。</p>
+      <p class="intro-line">不记得自己从哪里来，也不知道要去哪里。</p>
+      <p class="intro-line">前面有几个人。</p>
+      <p class="intro-line intro-line--cta">要不要过去说说话？</p>
+      <p class="intro-hint">点击任意处继续</p>
+    </div>
+  </div>
+
   <div class="app-container">
 
     <header class="app-header">
@@ -103,5 +114,103 @@
   <script src="characters.js"></script>
   <script src="dialogue.js"></script>
   <script src="ending.js"></script>
+
+  <script>
+    (function () {
+      var overlay = document.getElementById('intro-overlay');
+      var lines   = overlay.querySelectorAll('.intro-line');
+      var hint    = overlay.querySelector('.intro-hint');
+
+      var TOTAL       = lines.length; // 4
+      var COOLDOWN    = 3000;         // 3s 冷却
+      var FINAL_WAIT  = 10000;        // 最后一行后等待 10s
+
+      var shown       = -1;     // 当前已显示到第几行（-1 = 尚未显示任何行）
+      var cooldownEnd = 0;      // 冷却结束时间戳
+      var inFinalWait = false;  // 是否进入最终等待阶段
+      var exiting     = false;  // 是否已开始退场
+
+      /* ── 更新提示文字 ── */
+      function setHint(text, isFinal) {
+        hint.textContent = text;
+        hint.classList.add('io-visible');
+        if (isFinal) {
+          hint.classList.add('io-final');
+        } else {
+          hint.classList.remove('io-final');
+        }
+      }
+
+      /* ── 倒计时驱动器 ── */
+      function runCountdown(durationMs, onTick, onDone) {
+        var end = Date.now() + durationMs;
+        (function tick() {
+          if (exiting) return;
+          var remaining = end - Date.now();
+          if (remaining <= 0) { onDone(); return; }
+          onTick(Math.ceil(remaining / 1000));
+          setTimeout(tick, 250);
+        })();
+      }
+
+      /* ── 退场（淡出并移除节点） ── */
+      function dismiss() {
+        if (exiting) return;
+        exiting = true;
+        hint.classList.remove('io-visible');
+        setTimeout(function () {
+          overlay.classList.add('io-fading');
+          overlay.addEventListener('transitionend', function onEnd(e) {
+            if (e.target !== overlay) return;
+            overlay.removeEventListener('transitionend', onEnd);
+            if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+          });
+        }, 300);
+      }
+
+      /* ── 显示下一行并启动冷却 / 最终等待 ── */
+      function advance() {
+        shown++;
+        lines[shown].classList.add('io-visible');
+
+        if (shown === TOTAL - 1) {
+          // 最后一行 → 15s 后自动进入主界面
+          inFinalWait = true;
+          runCountdown(
+            FINAL_WAIT,
+            function (s) { setHint('片刻后，你迈出了脚步……  ' + s + 's', true); },
+            dismiss
+          );
+        } else {
+          // 普通行 → 10s 冷却
+          cooldownEnd = Date.now() + COOLDOWN;
+          runCountdown(
+            COOLDOWN,
+            function (s) { setHint(s + 's 后可继续', false); },
+            function () {
+              cooldownEnd = 0;
+              setHint('点击继续', false);
+            }
+          );
+        }
+      }
+
+      /* ── 交互入口（点击 / 键盘） ── */
+      function handleInteraction() {
+        if (exiting || inFinalWait) return;
+        if (Date.now() < cooldownEnd) return; // 冷却中，忽略
+        advance();
+      }
+
+      overlay.addEventListener('click', handleInteraction);
+      document.addEventListener('keydown', function (e) {
+        if (e.metaKey || e.ctrlKey || e.altKey) return;
+        handleInteraction();
+      });
+
+      // 初始提示（稍作延迟，避免页面加载闪烁）
+      setTimeout(function () { setHint('点击继续', false); }, 700);
+    })();
+  </script>
 </body>
 </html>

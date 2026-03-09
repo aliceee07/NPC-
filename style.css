@@ -808,6 +808,80 @@ body {
   background-color: rgba(255, 255, 255, 0.22);
 }
 
+/* ─── Intro Overlay ──────────────────────────────────────── */
+
+#intro-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background-color: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  user-select: none;
+  transition: opacity 800ms ease;
+}
+
+#intro-overlay.io-fading {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.intro-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  max-width: 520px;
+  padding: 0 32px;
+  text-align: center;
+}
+
+.intro-line {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 300;
+  line-height: 1.9;
+  letter-spacing: 0.06em;
+  color: #ebebeb;
+  opacity: 0;
+  transform: translateY(10px);
+  transition: opacity 900ms ease, transform 900ms ease;
+}
+
+.intro-line.io-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.intro-line--cta {
+  font-size: 16px;
+  color: #888;
+  margin-top: 10px;
+}
+
+.intro-line--cta.io-visible {
+  opacity: 1;
+}
+
+.intro-hint {
+  margin: 40px 0 0;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: #333;
+  opacity: 0;
+  transition: opacity 600ms ease;
+}
+
+.intro-hint.io-visible {
+  opacity: 1;
+}
+
+.intro-hint.io-final {
+  color: #555;
+  letter-spacing: 0.14em;
+}
+
 /* ─── Ending Overlay ─────────────────────────────────────── */
 
 #ending-overlay {
