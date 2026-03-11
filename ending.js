@@ -6,6 +6,7 @@
     stage2Results: {},
     stage3Results: {},
     dialogueSnapshot: null,
+    loopSummary: null,       // 结算 Prompt 返回的本轮一句话总结
   };
 
   /* ═══════════════════════════════════════════════════════════
@@ -231,30 +232,73 @@
     title.textContent = data.label;
     wrap.appendChild(title);
 
+    // Summary block (响应式，结算 Prompt 返回后更新)
+    const summaryBlock = document.createElement("div");
+    summaryBlock.className = "eo-summary-block";
+    summaryBlock.id = "eo-summary-block";
+    if (endingState.loopSummary) {
+      summaryBlock.textContent = endingState.loopSummary;
+    } else {
+      summaryBlock.classList.add("eo-loading-shimmer");
+      summaryBlock.textContent = "";
+    }
+    wrap.appendChild(summaryBlock);
+
+    // Buttons
     const actions = document.createElement("div");
     actions.className = "eo-actions";
 
-    const exportBtn = document.createElement("button");
-    exportBtn.className = "eo-btn";
-    exportBtn.textContent = "导出对话记录";
-    exportBtn.addEventListener("click", doExport);
+    // ① 保存对话数据
+    const exportTxtBtn = document.createElement("button");
+    exportTxtBtn.className = "eo-btn";
+    exportTxtBtn.textContent = "保存对话数据";
+    exportTxtBtn.addEventListener("click", doExportTxt);
 
-    const newBtn = document.createElement("button");
-    newBtn.className = "eo-btn eo-btn-secondary";
-    newBtn.textContent = "开启新对话";
-    newBtn.addEventListener("click", () => location.reload());
+    // ② 保存轮回记忆
+    const exportJsonBtn = document.createElement("button");
+    exportJsonBtn.className = "eo-btn";
+    exportJsonBtn.textContent = "保存轮回记忆";
+    exportJsonBtn.addEventListener("click", doExportJson);
 
-    actions.appendChild(exportBtn);
-    actions.appendChild(newBtn);
+    // ③ 直接开启下一轮次
+    const nextLoopBtn = document.createElement("button");
+    nextLoopBtn.className = "eo-btn";
+    nextLoopBtn.textContent = "直接开启下一轮次";
+    nextLoopBtn.addEventListener("click", doStartNextLoop);
+
+    // ④ 重新开始（清白刷新）
+    const restartBtn = document.createElement("button");
+    restartBtn.className = "eo-btn eo-btn-secondary";
+    restartBtn.textContent = "重新开始";
+    restartBtn.addEventListener("click", () => location.reload());
+
+    actions.appendChild(exportTxtBtn);
+    actions.appendChild(exportJsonBtn);
+    actions.appendChild(nextLoopBtn);
+    actions.appendChild(restartBtn);
     wrap.appendChild(actions);
     return wrap;
   }
 
+  /* ─── Summary DOM 响应式更新 ────────────────────────────────── */
+
+  function updateSummaryDom(text) {
+    const el = document.getElementById("eo-summary-block");
+    if (!el) return;
+    el.style.opacity = "0";
+    setTimeout(() => {
+      el.classList.remove("eo-loading-shimmer");
+      el.textContent = text || "";
+      el.style.opacity = "1";
+    }, 200);
+  }
+
   /* ═══════════════════════════════════════════════════════════
-     EXPORT
+     EXPORT FUNCTIONS
   ═══════════════════════════════════════════════════════════ */
 
-  function doExport() {
+  /* ① 保存对话数据（增强版：含初始人设） */
+  function doExportTxt() {
     const snap = endingState.dialogueSnapshot;
     if (!snap) return;
 
@@ -263,12 +307,22 @@
 
     lines.push("流浪者与三个路人 — 本轮对话记录");
     lines.push(`导出时间：${now}`);
+    if (endingState.loopSummary) {
+      lines.push(`本轮总结：${endingState.loopSummary}`);
+    }
     lines.push("=".repeat(48));
     lines.push("");
 
     snap.characters.forEach((c) => {
       lines.push(`【${c.name || c.id}】`);
       lines.push("─".repeat(32));
+
+      // 初始人设（新增）
+      if (c.systemPrompt) {
+        lines.push("【初始人设】");
+        lines.push(c.systemPrompt);
+        lines.push("─".repeat(32));
+      }
 
       const hist = snap.dialogueHistories[c.id] || [];
       if (hist.length === 0) {
@@ -305,6 +359,73 @@
     URL.revokeObjectURL(url);
   }
 
+  /* ─── 构建 loop archive 对象（② 和 ③ 共用） ─────────────────── */
+  function buildArchiveObject(loopIndex) {
+    const snap = endingState.dialogueSnapshot;
+    const characters = {};
+
+    if (snap) {
+      snap.characters.forEach((c) => {
+        const sub = c.mutableSubconscious
+          ? { ...c.mutableSubconscious }
+          : { dejaVuLevel: 0, subconsciousImpression: "", thresholdAdjustment: "", nextLoopPromptPatch: "" };
+        // dejaVuLevel 覆盖为终局时的 currentCandor
+        sub.dejaVuLevel = c.currentCandor || 0;
+
+        characters[c.id] = {
+          immutableCore: {
+            id:          c.id,
+            name:        c.name        || c.id,
+            targetColor: c.targetColor || "#000000",
+            candorRates: c.candorRates || { rise: 1, fall: 1 },
+          },
+          mutableSubconscious: sub,
+        };
+      });
+    }
+
+    return {
+      loop_index: loopIndex,
+      ran_at:     new Date().toISOString(),
+      characters,
+      summary:    endingState.loopSummary || "",
+    };
+  }
+
+  /* ② 保存轮回记忆（JSON，供下次手动导入） */
+  function doExportJson() {
+    const loopIndex = (window.LoopState && window.LoopState.getLoopIndex)
+      ? window.LoopState.getLoopIndex()
+      : 1;
+    const archive = buildArchiveObject(loopIndex);
+
+    const isoTs  = archive.ran_at.replace(/[:.]/g, "-").replace("Z", "");
+    const blob   = new Blob([JSON.stringify(archive, null, 2)], { type: "application/json;charset=utf-8" });
+    const url    = URL.createObjectURL(blob);
+    const a      = document.createElement("a");
+    a.href       = url;
+    a.download   = `loop_archive_${isoTs}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  /* ③ 直接开启下一轮次（sessionStorage + reload） */
+  function doStartNextLoop() {
+    const currentIndex = (window.LoopState && window.LoopState.getLoopIndex)
+      ? window.LoopState.getLoopIndex()
+      : 1;
+    const archive = buildArchiveObject(currentIndex + 1);
+
+    try {
+      sessionStorage.setItem("npc_pending_loop", JSON.stringify(archive));
+    } catch (err) {
+      console.error("[ending.js] sessionStorage write failed:", err);
+    }
+    location.reload();
+  }
+
   /* ═══════════════════════════════════════════════════════════
      HELPERS
   ═══════════════════════════════════════════════════════════ */
@@ -336,6 +457,48 @@
     },
     required: ["action", "line", "reason"],
   };
+
+  const SUMMARY_SCHEMA = {
+    type: "object",
+    properties: {
+      summary: { type: "string" },
+    },
+    required: ["summary"],
+  };
+
+  /* ═══════════════════════════════════════════════════════════
+     SUMMARY  —  结算 Prompt，stage 3 完成后非阻塞触发
+  ═══════════════════════════════════════════════════════════ */
+
+  async function runSummary(characters, histories, p3Results, callGemini) {
+    const charLines = characters.map((c) => {
+      const p3 = p3Results[c.id] || {};
+      return [
+        `【${c.name || c.id}】`,
+        histText(histories, c.id) || "（无对话）",
+        `终局行为：${p3.action || "（未知）"}`,
+      ].join("\n");
+    }).join("\n\n");
+
+    const sp = "你是叙事总结助手，根据本轮对话记录与终局行为，用一句话总结本轮故事的核心。不超过 40 字。";
+    const uc = [
+      "以下是本轮三位路人与玩家的对话历史及终局行为：",
+      "",
+      charLines,
+      "",
+      "请用一句话（不超过 40 字）概括本轮发生了什么，重点放在玩家与路人之间的连结程度与终局走向。",
+    ].join("\n");
+
+    const r = await callGemini({
+      label: "结算总结",
+      systemPrompt: sp,
+      messages: [{ role: "user", content: uc }],
+      responseSchema: SUMMARY_SCHEMA,
+      isEndingPhase: true,
+    });
+
+    return (r && r.summary) ? r.summary : "";
+  }
 
   /* ═══════════════════════════════════════════════════════════
      PRODUCER  —  sequential API calls, fills slots reactively
@@ -451,6 +614,15 @@
       }
     }
     endingState.stage3Results = p3Results;
+
+    /* ── 结算 Prompt（非阻塞，stage 3 完成后触发） ──────────── */
+    endingState.loopSummary = null;
+    runSummary(characters, histories, p3Results, callGemini)
+      .then((s) => {
+        endingState.loopSummary = s;
+        updateSummaryDom(s);
+      })
+      .catch(() => {});
   }
 
   /* ═══════════════════════════════════════════════════════════

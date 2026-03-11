@@ -51,6 +51,13 @@
 
   const SYSTEM_PROMPT_BASE = createSystemPromptBase();
 
+  const EMPTY_SUBCONSCIOUS = {
+    dejaVuLevel: 0,
+    subconsciousImpression: "",
+    thresholdAdjustment: "",
+    nextLoopPromptPatch: "",
+  };
+
   const baseCharacters = [
     {
       id: "char1",
@@ -60,6 +67,7 @@
       maxCandor: MAX_CANDOR,
       currentColor: "#000000",
       candorRates: { rise: 1, fall: 1 },
+      mutableSubconscious: { ...EMPTY_SUBCONSCIOUS },
       systemPrompt: `${SYSTEM_PROMPT_BASE}
 
 【核心伤口】
@@ -107,6 +115,7 @@ false：对话维持礼貌但没有发生真实连结，或玩家在走情感套
       maxCandor: MAX_CANDOR,
       currentColor: "#000000",
       candorRates: { rise: 1, fall: 6 },
+      mutableSubconscious: { ...EMPTY_SUBCONSCIOUS },
       systemPrompt: `${SYSTEM_PROMPT_BASE}
 
 【核心伤口】
@@ -156,6 +165,7 @@ false：媚俗、浅薄、用情感牌代替思想，或任何让你觉得"傻X"
       maxCandor: MAX_CANDOR,
       currentColor: "#000000",
       candorRates: { rise: 1, fall: 1 },
+      mutableSubconscious: { ...EMPTY_SUBCONSCIOUS },
       systemPrompt: `${SYSTEM_PROMPT_BASE}
 
 【核心伤口】
@@ -198,6 +208,24 @@ false：玩家冷淡、不回应你的情感、或明显在走程序
     },
   ];
 
+  /* ─── injectSubconscious ─────────────────────────────────── */
+  /* 将导入的 mutableSubconscious 写入 baseCharacters 对应项。   */
+  /* 若 nextLoopPromptPatch 非空，追加到 systemPrompt。          */
+  /* 每次页面生命周期内应只调用一次（由 loop.js 保证）。          */
+  function injectSubconscious(charId, data) {
+    const char = baseCharacters.find(function (c) { return c.id === charId; });
+    if (!char) return;
+    char.mutableSubconscious = {
+      dejaVuLevel:            data.dejaVuLevel            || 0,
+      subconsciousImpression: data.subconsciousImpression || "",
+      thresholdAdjustment:    data.thresholdAdjustment    || "",
+      nextLoopPromptPatch:    data.nextLoopPromptPatch     || "",
+    };
+    if (data.nextLoopPromptPatch) {
+      char.systemPrompt += "\n\n【前世记忆补丁】\n" + data.nextLoopPromptPatch;
+    }
+  }
+
   /* candorLevel is an absolute value (0–MAX_CANDOR) */
   function updateCandorAndColor(character, candorLevel) {
     const max = character.maxCandor || MAX_CANDOR;
@@ -229,6 +257,7 @@ false：玩家冷淡、不回应你的情感、或明显在走程序
     baseCharacters,
     updateCandorAndColor,
     stepCandorAndColor,
+    injectSubconscious,
     mixColors,
     clamp,
     hexToRgb,

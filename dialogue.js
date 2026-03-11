@@ -622,6 +622,15 @@
 
   /* ─── Public API (used by ending.js) ────────────────────── */
 
+  /* ─── patchCharacter ─────────────────────────────────────── */
+  /* loop.js 导入存档后调用，同步更新已初始化的活跃角色对象。     */
+  /* 只修改已存在的项，不新增字段，不触发任何渲染。               */
+  function patchCharacter(charId, patch) {
+    const idx = state.characters.findIndex((c) => c.id === charId);
+    if (idx < 0) return;
+    state.characters[idx] = { ...state.characters[idx], ...patch };
+  }
+
   window.DialogueState = {
     getSnapshot() {
       return {
@@ -633,5 +642,6 @@
     getDialogueHistories: () => state.dialogueHistories,
     callGemini,
     appendAiOutput,
+    patchCharacter,
   };
 })();

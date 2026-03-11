@@ -33,8 +33,7 @@ g:\works\NPC-\
 │                         # 关键 DOM 节点：#intro-overlay（入场遮罩，渲染后由内联脚本移除）
 │
 ├── style.css             # [全局样式层] 所有 CSS 均在此；包含入场遮罩动画、场景动画、
-│                         # 对话气泡、终局遮罩等全部视觉。无 CSS Module/BEM 方法论，
-│                         # 直接使用 ID/class 选择器。
+│                         # 对话气泡、终局遮罩、周目选择遮罩等全部视觉。
 │
 ├── characters.js         # [数据定义层] NPC 原始数据、颜色计算工具函数。
 │                         # 职责边界：只管"角色是什么"，不管"对话怎么发生"。
@@ -47,6 +46,10 @@ g:\works\NPC-\
 ├── ending.js             # [终局演出层] 全屏覆盖遮罩、分屏叙事、异步 API 调用、导出。
 │                         # 依赖 window.DialogueState 的快照数据。
 │                         # 对外暴露：window.EndingState
+│
+├── loop.js               # [周目入口层] 周目选择界面、sessionStorage 自动导入、
+│                         # 手动 JSON 导入、mutableSubconscious 注入。
+│                         # 对外暴露：window.LoopState
 │
 ├── config.example.js     # [配置模板] 明确标注需复制为 config.local.js 并填入 Key。
 │                         # 此文件永远不应包含真实密钥，应提交到版本库。
@@ -67,10 +70,17 @@ g:\works\NPC-\
 
 ### 3.1 模块划分
 
-项目按职责被划分为 5 个层次（含入场展示层）：
+项目按职责被划分为 6 个层次（含周目入口层与入场展示层）：
 
 ```
 ┌─────────────────────────────────────────────────────────┐
+│  [周目入口层]   loop.js                                   │
+│                 #loop-select-overlay（全屏黑底遮罩，       │
+│                 sessionStorage 自动导入 / 手动 JSON 导入） │
+│                 window.LoopState { getLoopIndex }         │
+└──────────────────────┬──────────────────────────────────┘
+                       │ 退出后进入
+┌──────────────────────▼──────────────────────────────────┐
 │  [入场层]   index.html 内联脚本                           │
 │             #intro-overlay（全屏黑底遮罩，用后销毁）       │
 │             逐行显示叙事文案，点击/按键后淡出移除           │
@@ -86,7 +96,7 @@ g:\works\NPC-\
 │             window.NPCConfig                             │
 │             { MAX_CANDOR, baseCharacters,                │
 │               updateCandorAndColor, mixColors,           │
-│               clamp, hexToRgb }                          │
+│               injectSubconscious, clamp, hexToRgb }      │
 └──────────────────────┬──────────────────────────────────┘
                        │ 全局变量消费
 ┌──────────────────────▼──────────────────────────────────┐
@@ -94,14 +104,15 @@ g:\works\NPC-\
 │             window.DialogueState                         │
 │             { getSnapshot, getCharacters,                │
 │               getDialogueHistories, callGemini,          │
-│               appendAiOutput }                           │
+│               appendAiOutput, patchCharacter }           │
 └──────────────────────┬──────────────────────────────────┘
                        │ 全局变量消费（触发时机：#ending-button click）
 ┌──────────────────────▼──────────────────────────────────┐
 │  [终局层]   ending.js                                    │
 │             window.EndingState                           │
 │             { triggered, stage2Results,                  │
-│               stage3Results, dialogueSnapshot }          │
+│               stage3Results, dialogueSnapshot,           │
+│               loopSummary }                              │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -122,9 +133,11 @@ g:\works\NPC-\
 
 | 状态位置 | 内容 | 生命周期 |
 |---|---|---|
-| `dialogue.js` 内部 `const state = {}` | `characters[]`（含坦诚度）、`dialogueHistories{}`、`closingStreaks{}` | 页面整个生命周期 |
-| `ending.js` 内部 `window.EndingState` | 终局快照、各阶段 AI 结果 | 终局触发后 |
+| `dialogue.js` 内部 `const state = {}` | `characters[]`（含坦诚度、mutableSubconscious）、`dialogueHistories{}`、`closingStreaks{}` | 页面整个生命周期 |
+| `ending.js` 内部 `window.EndingState` | 终局快照、各阶段 AI 结果、`loopSummary`（结算一句话总结） | 终局触发后 |
+| `loop.js` 内部 `loopState` | `currentLoopIndex`（当前周目编号） | 页面整个生命周期 |
 | `window.GEMINI_PRESET_KEY/MODEL` | 用户配置 | 页面整个生命周期 |
+| `sessionStorage('npc_pending_loop')` | 跨刷新传递的 loop_archive 对象（由「直接开启下一轮次」写入，loop.js 启动时消费并删除） | 跨 reload，标签页关闭后清空 |
 
 ### 4.2 对话阶段数据流
 
@@ -161,18 +174,45 @@ state.dialogueHistories[charId].push({ role: "user", content })
          ▼
 DialogueState.getSnapshot() → 深拷贝所有角色数据 + 对话历史
          │
-         ▼ buildQueue()
+         ▼ runProducer()
 4 个页面帧入队：
   [0] 阶段一: 静态文案（根据 colorMood() 生成，立即 ready）
   [1] 阶段二: 每个 NPC 的"即时行为"（异步 callGemini，slot loading → fillSlot）
-  [2] 阶段三: 每个 NPC 的"内心独白"（依赖阶段二结果，异步 callGemini）
-  [3] 尾声: 导出按钮 + 新对话按钮（静态）
+  [2] 阶段三: 每个 NPC 的"最终选择"（依赖阶段二结果，异步 callGemini）
+  [3] 尾声: summary block（响应式）+ 四按钮
+         │
+         ├─ stage 3 完成后：runSummary()（非阻塞，结果更新 endingState.loopSummary）
+         │                   → updateSummaryDom() 响应式填入尾声页
          │
          ▼ createOverlay() → document.body 追加 #ending-overlay
-用户翻页（点击 / 60s 超时）→ advance()（翻页前检查当前帧所有 slots.ready，存在未就绪 slot 时阻止翻页）→ renderCurrentFrame()
+用户翻页（点击 / 60s 超时）→ advance()（翻页前检查当前帧所有 slots.ready）→ renderEntry()
          │
-         ▼ [尾声页导出按钮]
-formatExport() → Blob → URL.createObjectURL → <a> 下载 .txt
+         ▼ [尾声页四按钮]
+  ① 保存对话数据 → doExportTxt() → Blob → .txt（含初始人设）
+  ② 保存轮回记忆 → doExportJson() → Blob → loop_archive_[ts].json
+  ③ 直接开启下一轮次 → doStartNextLoop() → sessionStorage('npc_pending_loop') → reload
+  ④ 重新开始 → location.reload()（清白刷新）
+```
+
+### 4.4 跨周目数据流
+
+```
+[尾声页「直接开启下一轮次」]
+         │
+         ▼ buildArchiveObject(currentIndex + 1)
+         │ → { loop_index, ran_at, characters:{ immutableCore, mutableSubconscious }, summary }
+         │
+         ▼ sessionStorage.setItem('npc_pending_loop', JSON.stringify(archive))
+         │
+         ▼ location.reload()
+         │
+         ▼ [新页面 loop.js IIFE 执行]
+         │
+sessionStorage.getItem('npc_pending_loop')
+  ├── 存在 → removeItem → injectArchive() → 注入三角色 mutableSubconscious
+  │          → currentLoopIndex = archive.loop_index
+  │          → 显示「— 记忆已延续 · 第 N 周目 —」1.5s → 进入 intro-overlay
+  └── 不存在 → 显示手动周目选择界面（新周目 / 手动导入 JSON）
 ```
 
 ---
@@ -237,13 +277,52 @@ return { ...character, currentCandor: newCandor, currentColor: newColor };
 
 ---
 
+---
+
+## 4.5 loop_archive JSON 结构
+
+`loop_archive_[ISO时间戳].json` 由「保存轮回记忆」导出，可通过「继续上一段记忆」手动导入，或由「直接开启下一轮次」经 sessionStorage 自动传递。
+
+```json
+{
+  "loop_index": 2,
+  "ran_at": "2026-03-11T12:00:00.000Z",
+  "characters": {
+    "char1": {
+      "immutableCore": {
+        "id": "char1",
+        "name": "她·蓝",
+        "targetColor": "#8B9EA8",
+        "candorRates": { "rise": 1, "fall": 1 }
+      },
+      "mutableSubconscious": {
+        "dejaVuLevel": 4,
+        "subconsciousImpression": "玩家曾以具体的细节触碰到她，她记得那种感觉。",
+        "thresholdAdjustment": "",
+        "nextLoopPromptPatch": ""
+      }
+    },
+    "char2": { "...": "..." },
+    "char3": { "...": "..." }
+  },
+  "summary": "玩家与她·蓝建立了真实连结，但在危机时刻仍未能改变旁观者的沉默。"
+}
+```
+
+- `dejaVuLevel`：上轮终局时的 `currentCandor`（0–6），用作下轮"似曾相识"程度的数值参考
+- `nextLoopPromptPatch`：若非空，导入时自动追加到对应角色的 systemPrompt（`【前世记忆补丁】`）
+- `summary`：由结算 Prompt（ending.js 内 `runSummary()`）生成，若 API 调用失败则为空字符串
+
+---
+
 ### ⚠️ 警告未来开发者 (Critical Warnings)
 
 > **1. `dialogue.js` 是最脆弱的核心文件**
 > 该文件同时承担：状态管理、AI 调用、JSON 解析、DOM 渲染、事件绑定。任何修改都可能产生跨关注点的副作用。在修改前务必完整阅读全文。
 
 > **2. `<script>` 加载顺序不可随意调整**
-> `index.html` 中的脚本顺序是隐式的依赖声明。`dialogue.js` 在加载时立即访问 `window.NPCConfig`（由 `characters.js` 注入），任何顺序调整将导致 `Cannot read properties of undefined` 运行时崩溃。
+> `index.html` 中的脚本顺序是隐式的依赖声明：`dialogue.js` 在加载时立即访问 `window.NPCConfig`，`loop.js` 在加载时立即访问 `window.NPCConfig` 和 `window.DialogueState`，内联 intro-overlay 脚本必须在 `loop.js` 之后运行（loop.js 的 capture keydown 拦截器须先注册）。任何顺序调整都可能导致运行时崩溃或拦截器失效。
+> 当前顺序：`config.local.js` → `characters.js` → `dialogue.js` → `ending.js` → `loop.js` → 内联脚本。
 
 > **3. `closingStreaks` 是单向不可逆的**
 > 某个角色的 `closingStreak` 一旦达到 `CLOSE_THRESHOLD`（3），该角色对话即永久关闭，**无法通过任何用户操作恢复**。这是刻意的设计决定，但代码中无注释说明，修改时须注意。
@@ -289,6 +368,33 @@ return { ...character, currentCandor: newCandor, currentColor: newColor };
 ## 7. 开发协作文档
 
 本项目包含 [`AI_DEV_WORKFLOW.md`](AI_DEV_WORKFLOW.md)，规定了与 AI 协作进行结构化更新的完整工作流：前置阅读清单、更新请求模板、`ARCHITECTURE.md` 同步规则及验收自查清单。每次向 AI 提交更新请求前，建议先阅读该文档。
+
+---
+
+---
+
+## 8. 多周目体验说明 (Multi-Loop Flow)
+
+### 8.1 尾声页四按钮
+
+| 按钮 | 行为 | 互斥 |
+|---|---|---|
+| 保存对话数据 | 下载 .txt（含初始人设） | 否 |
+| 保存轮回记忆 | 下载 loop_archive JSON（供手动导入） | 否 |
+| 直接开启下一轮次 | sessionStorage 写入 archive → reload | 否 |
+| 重新开始 | 清白 reload，无数据传递 | 否 |
+
+### 8.2 周目入口三状态
+
+| 状态 | 触发条件 | 行为 |
+|---|---|---|
+| 自动续档 | sessionStorage 有 `npc_pending_loop` | 显示「记忆已延续·第N周目」1.5s → intro |
+| 新周目 | 无 sessionStorage，点击「开启新的旅程」 | currentLoopIndex=1 → intro |
+| 手动导入 | 无 sessionStorage，点击「继续上一段记忆」 | 粘贴 JSON → 注入 → 预览3s → intro |
+
+### 8.3 mutableSubconscious 生命周期
+
+每个 NPC 的 `mutableSubconscious` 在 `characters.js` 中以空值初始化。导入存档后由 `NPCConfig.injectSubconscious` 写入 `baseCharacters`，并由 `DialogueState.patchCharacter` 同步到活跃的 `state.characters`。`nextLoopPromptPatch` 非空时自动追加到 systemPrompt（本页面生命周期内单次生效）。
 
 ---
 

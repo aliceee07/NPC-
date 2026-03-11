@@ -1121,3 +1121,164 @@ body {
 .eo-btn-secondary:hover {
   color: #aaa;
 }
+
+/* ─── Loop Select Overlay ────────────────────────────────── */
+
+#loop-select-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background-color: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: default;
+  user-select: none;
+  opacity: 1;
+  transition: opacity 800ms ease;
+}
+
+#loop-select-overlay.ls-fading {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.ls-options {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 36px;
+  max-width: 480px;
+  padding: 0 32px;
+  text-align: center;
+}
+
+.ls-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 300;
+  letter-spacing: 0.12em;
+  color: #444;
+}
+
+.ls-option {
+  margin: 0;
+  padding: 0;
+  background: none;
+  border: none;
+  outline: none;
+  cursor: pointer;
+  font-size: 18px;
+  font-weight: 300;
+  font-family: inherit;
+  letter-spacing: 0.06em;
+  color: #888;
+  transition: color 300ms ease;
+}
+
+.ls-option:hover {
+  color: #ebebeb;
+}
+
+.ls-option--dim {
+  font-size: 14px;
+  color: #555;
+}
+
+.ls-option--dim:hover {
+  color: #aaa;
+}
+
+.ls-auto-msg {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 300;
+  letter-spacing: 0.1em;
+  color: #666;
+}
+
+.ls-import-box {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 440px;
+  max-width: calc(100vw - 48px);
+  animation: ls-fade-in 400ms ease both;
+}
+
+.ls-import-box--hidden {
+  display: none;
+}
+
+@keyframes ls-fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.ls-textarea {
+  resize: vertical;
+  min-height: 100px;
+  padding: 8px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background-color: #06070a;
+  color: #ebebeb;
+  font-size: 12px;
+  font-family: inherit;
+  line-height: 1.5;
+}
+
+.ls-textarea::placeholder {
+  color: #444;
+}
+
+.ls-confirm-btn {
+  align-self: flex-end;
+  padding: 6px 16px;
+  border-radius: 999px;
+  border: none;
+  cursor: pointer;
+  background: linear-gradient(135deg, #e8e8e8, #b0b0b0);
+  color: #06070a;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  transition: transform 80ms, box-shadow 120ms;
+}
+
+.ls-confirm-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 0 16px rgba(255, 255, 255, 0.2);
+}
+
+.ls-status {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: #666;
+  min-height: 1.4em;
+}
+
+.ls-preview {
+  margin: 0;
+  font-size: 11px;
+  font-family: inherit;
+  letter-spacing: 0.04em;
+  color: #666;
+  white-space: pre-wrap;
+  line-height: 1.8;
+}
+
+/* ─── Epilogue Summary Block ─────────────────────────────── */
+
+.eo-summary-block {
+  margin: 0 0 28px;
+  font-size: 14px;
+  font-weight: 300;
+  letter-spacing: 0.08em;
+  color: #888;
+  min-height: 1.6em;
+  text-align: center;
+  transition: opacity 200ms ease;
+  opacity: 1;
+}
