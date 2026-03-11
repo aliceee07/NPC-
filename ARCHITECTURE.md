@@ -1,6 +1,6 @@
 # ARCHITECTURE.md
 > **Source of Truth** — 供未来 AI 或人类开发者使用的架构参考文档。
-> 生成日期：2026-03-05 | 审查者：资深架构师（AI）
+> 生成日期：2026-03-05 | 最后更新：2026-03-11 | 审查者：资深架构师（AI）
 
 ---
 
@@ -15,7 +15,8 @@
 | 原生 HTML5 | — | 页面结构与入口 |
 | 原生 CSS3 | — | 全局样式、动画、响应式布局 |
 | 原生 JavaScript (ES2020+) | — | 所有业务逻辑，使用 IIFE 模块模式 |
-| Google Gemini REST API | v1beta | 驱动 NPC 对话（`generateContent` 端点） |
+| Google Gemini REST API | v1beta | 驱动 NPC 对话（`generateContent` 端点），可选来源之一 |
+| 硅基流动 OpenAI 兼容 API | v1 | 驱动 NPC 对话（`/v1/chat/completions` 端点），可选来源之一 |
 | 原生 `fetch` API | — | 所有 HTTP 请求 |
 | 原生 `Blob` + `URL.createObjectURL` | — | 终局对话记录导出为 `.txt` 文件 |
 
@@ -54,8 +55,10 @@ g:\works\NPC-\
 ├── config.example.js     # [配置模板] 明确标注需复制为 config.local.js 并填入 Key。
 │                         # 此文件永远不应包含真实密钥，应提交到版本库。
 │
-├── config.local.js       # [本地密钥] .gitignore 排除，不提交。注入两个预设全局变量：
+├── config.local.js       # [本地密钥] .gitignore 排除，不提交。注入五个预设全局变量：
+│                         # window.AI_PROVIDER（"gemini" | "siliconflow"）
 │                         # window.GEMINI_PRESET_KEY, window.GEMINI_PRESET_MODEL
+│                         # window.SILICONFLOW_PRESET_KEY, window.SILICONFLOW_PRESET_MODEL
 │
 ├── AI_DEV_WORKFLOW.md    # [AI 协作规范] 供人类开发者每次提交 AI 更新请求时使用的
 │                         # 标准化操作文档：前置动作清单、更新请求模板、
@@ -88,7 +91,9 @@ g:\works\NPC-\
                        │ 退出后暴露主界面
 ┌──────────────────────▼──────────────────────────────────┐
 │  [配置层]   config.local.js (可选)                       │
+│             window.AI_PROVIDER                           │
 │             window.GEMINI_PRESET_KEY / PRESET_MODEL      │
+│             window.SILICONFLOW_PRESET_KEY / PRESET_MODEL │
 └──────────────────────┬──────────────────────────────────┘
                        │ 全局变量注入
 ┌──────────────────────▼──────────────────────────────────┐
@@ -104,7 +109,10 @@ g:\works\NPC-\
 │             window.DialogueState                         │
 │             { getSnapshot, getCharacters,                │
 │               getDialogueHistories, callGemini,          │
-│               appendAiOutput, patchCharacter }           │
+│               appendAiOutput, patchCharacter,            │
+│               resetForNewLoop }                          │
+│             内部：callGeminiProvider / callSiliconFlow-  │
+│             Provider（由 callGemini 按 AI_PROVIDER 路由） │
 └──────────────────────┬──────────────────────────────────┘
                        │ 全局变量消费（触发时机：#ending-button click）
 ┌──────────────────────▼──────────────────────────────────┐
@@ -136,7 +144,12 @@ g:\works\NPC-\
 | `dialogue.js` 内部 `const state = {}` | `characters[]`（含坦诚度、mutableSubconscious）、`dialogueHistories{}`、`closingStreaks{}` | 页面整个生命周期 |
 | `ending.js` 内部 `window.EndingState` | 终局快照、各阶段 AI 结果、`loopSummary`（结算一句话总结） | 终局触发后 |
 | `loop.js` 内部 `loopState` | `currentLoopIndex`（当前周目编号） | 页面整个生命周期 |
-| `window.GEMINI_PRESET_KEY/MODEL` | 用户配置 | 页面整个生命周期 |
+| `window.AI_PROVIDER` | 当前选择的 API 来源（`"gemini"` \| `"siliconflow"`） | 页面整个生命周期 |
+| `window.GEMINI_PRESET_KEY/MODEL` | Gemini 用户配置 | 页面整个生命周期 |
+| `window.SILICONFLOW_PRESET_KEY/MODEL` | 硅基流动用户配置 | 页面整个生命周期 |
+| `localStorage('npc_api_provider')` | 用户上次选择的 API 来源（页面刷新后自动回填表单，回退至 `window.AI_PROVIDER`） | 浏览器本地持久化 |
+| `localStorage('npc_api_key')` | 用户上次填写的 API Key（页面刷新后自动回填输入框） | 浏览器本地持久化 |
+| `localStorage('npc_api_model')` | 用户上次填写的模型名（页面刷新后自动回填输入框） | 浏览器本地持久化 |
 | `sessionStorage('npc_pending_loop')` | 跨刷新传递的 loop_archive 对象（由「直接开启下一轮次」写入，loop.js 启动时消费并删除） | 跨 reload，标签页关闭后清空 |
 
 ### 4.2 对话阶段数据流
@@ -149,8 +162,13 @@ state.dialogueHistories[charId].push({ role: "user", content })
          │
          ▼ callGemini()
          ├── [无 API Key] → mockResponse() → 返回硬编码模拟数据
-         └── [有 API Key] → fetch POST Gemini API
-                               (system_instruction + full history + responseSchema)
+         └── [有 API Key] → 按 provider 路由
+               ├── callGeminiProvider()：role 直接映射（"user"/"model"）
+               └── callSiliconFlowProvider()：
+                     过滤非法 role（仅保留 "user"/"assistant"/"system"/"tool"，
+                     "model" 转换为 "assistant"，"error" 等无效角色被丢弃）
+                     → fetch POST OpenAI 兼容 API
+                   (system_instruction + filtered history + responseSchema)
                                          │
                                          ▼ 解析 JSON
                     { reply: string, touched: boolean, closing_signal: boolean }
@@ -181,8 +199,12 @@ DialogueState.getSnapshot() → 深拷贝所有角色数据 + 对话历史
   [2] 阶段三: 每个 NPC 的"最终选择"（依赖阶段二结果，异步 callGemini）
   [3] 尾声: summary block（响应式）+ 四按钮
          │
-         ├─ stage 3 完成后：runSummary()（非阻塞，结果更新 endingState.loopSummary）
-         │                   → updateSummaryDom() 响应式填入尾声页
+         ├─ stage 3 完成后（两者并行、非阻塞）：
+         │   ① runSummary() → endingState.loopSummary → updateSummaryDom() 响应式填入尾声页
+         │   ② runAllSubconsciousSettlements()（高维命运观测者，逐 NPC 并行）
+         │      → 写入 endingState.dialogueSnapshot.characters[].mutableSubconscious
+         │        { subconsciousImpression, thresholdAdjustment, nextLoopPromptPatch }
+         │      → buildArchiveObject 读 snapshot 导出时自动包含结算内容
          │
          ▼ createOverlay() → document.body 追加 #ending-overlay
 用户翻页（点击 / 60s 超时）→ advance()（翻页前检查当前帧所有 slots.ready）→ renderEntry()
@@ -246,6 +268,7 @@ sessionStorage.getItem('npc_pending_loop')
 - Schema 解析失败时，`normalizeSchema()` 不抛出，返回原始值（防御性编程）。
 - API 调用失败时，`handleSend` 的 `catch` 及 null 检查会向对话框追加红色 `error` 类型的系统提示消息，告知用户发生了错误。**无全局错误边界**，对话流之外的异常仍仅打印到控制台。
 - `handleSend` 在 `await callGemini()` 返回后会核验 `state.currentCharacterId` 是否仍等于请求发起时的角色 id；若用户在等待期间切换了角色，则静默丢弃该回复，不写入历史也不触发任何渲染。
+- **`error` 角色消息过滤**：`appendMessage("error", ...)` 追加的错误提示消息会被存入 `dialogueHistories`（用于页面渲染），但 `callSiliconFlowProvider` 在构建请求体时会通过白名单（`VALID_SF_ROLES`）将其过滤，不发送给 API。`callGeminiProvider` 侧通过 `role !== "user"` 时全部映射为 `"model"` 的方式亦不会引发问题，但错误消息会以 `model` 角色进入 Gemini 上下文——这是一个已知的轻微不一致，尚未统一修复。
 
 ### 5.4 不可变更新模式
 
@@ -324,14 +347,22 @@ return { ...character, currentCandor: newCandor, currentColor: newColor };
 > `index.html` 中的脚本顺序是隐式的依赖声明：`dialogue.js` 在加载时立即访问 `window.NPCConfig`，`loop.js` 在加载时立即访问 `window.NPCConfig` 和 `window.DialogueState`，内联 intro-overlay 脚本必须在 `loop.js` 之后运行（loop.js 的 capture keydown 拦截器须先注册）。任何顺序调整都可能导致运行时崩溃或拦截器失效。
 > 当前顺序：`config.local.js` → `characters.js` → `dialogue.js` → `ending.js` → `loop.js` → 内联脚本。
 
-> **3. `closingStreaks` 是单向不可逆的**
-> 某个角色的 `closingStreak` 一旦达到 `CLOSE_THRESHOLD`（3），该角色对话即永久关闭，**无法通过任何用户操作恢复**。这是刻意的设计决定，但代码中无注释说明，修改时须注意。
+> **3. `closingStreaks` 在单局内单向不可逆，但跨周目会被重置**
+> 某个角色的 `closingStreak` 一旦达到 `CLOSE_THRESHOLD`（3），该角色对话在**本局**永久关闭，无法通过任何用户操作恢复。这是刻意的设计决定。
+> 跨周目导入存档时，`loop.js` 的 `injectArchive` 会在注入前调用 `DialogueState.resetForNewLoop()`，将 `closingStreaks`、`dialogueHistories`、`currentCandor` 全部归零，保证新一周目以干净状态开始。✓ 已修复（陷阱 B）
 
 > ~~**4. `ending.js` 的 `#ending-panel` DOM 节点是死代码**~~
 > ~~`index.html` 中定义的 `<section class="ending-panel">` 在运行时**从不被使用**。`ending.js` 通过 `document.body.appendChild(overlay)` 动态创建完全独立的 `#ending-overlay`。该 HTML 节点可安全移除。~~ **✓ 已修复：废弃节点已从 `index.html` 删除。**
 
-> **5. Gemini API Key 暴露于请求 URL**
-> API Key 以 `?key=` 形式附加在 `fetch` URL 的 query string 中，会被浏览器历史记录、`devtools` 网络面板及任何代理日志捕获。作为 Demo 项目这是已知权衡，但若部署于公开环境，须通过后端代理隐藏 Key。
+> **5. API Key 存在泄露风险**
+> Gemini API Key 以 `?key=` 形式附加在 `fetch` URL 的 query string 中；硅基流动 API Key 以 `Authorization: Bearer` 请求头形式发送。两者均会被浏览器 `devtools` 网络面板及任何代理日志捕获。作为 Demo 项目这是已知权衡，但若部署于公开环境，须通过后端代理隐藏 Key。
+> 此外，API Key 现在通过 `localStorage` 持久化（明文存储）。在共享设备上使用时需注意，其他访问该浏览器的用户可在 devtools 中直接读取 `localStorage.getItem('npc_api_key')`。
+
+> **7. `error` 角色消息在 Gemini provider 中未被过滤**
+> `appendMessage("error", ...)` 产生的错误提示消息会进入 `dialogueHistories`。`callSiliconFlowProvider` 通过白名单 `VALID_SF_ROLES` 正确过滤了这类消息。但 `callGeminiProvider` 对所有非 `"user"` 角色一律映射为 `"model"`，导致错误提示消息会以 `role: "model"` 混入 Gemini 上下文，污染 NPC 的对话记忆。若出现 NPC 突然"提及自己听不见"等异常表现，优先排查此问题。修复方向：在 `callGeminiProvider` 的 contents 构建处同样增加角色白名单过滤。
+
+> **6. `injectSubconscious` 的 `systemPrompt` 追加必须使用 `_originalSystemPrompt` 为基准**
+> `characters.js` 中每个角色在数组定义后立即快照 `_originalSystemPrompt`。`injectSubconscious` 必须写成 `char.systemPrompt = char._originalSystemPrompt + patch`（赋值覆盖），**不得使用 `+=`（追加）**。若改回追加形式，玩家在同一页面生命周期内多次导入存档时，补丁会叠加，AI 收到重复指令。✓ 已修复（陷阱 A）
 
 ---
 
@@ -358,6 +389,7 @@ return { ...character, currentCandor: newCandor, currentColor: newColor };
 | # | 问题 | 影响 | 建议方向 |
 |---|---|---|---|
 | ~~7~~ | ~~**无任何错误向用户展示机制**~~ | ~~API 调用失败（网络、Key 失效、配额超限）时用户只看到输入框无响应，无任何提示~~ **✓ 已修复：`handleSend` 的 `catch` 及 null 检查均追加红色 `error` 系统提示。** | ~~在 `handleSend` 的 `catch` 中向对话框追加错误提示消息~~ |
+| ~~10~~ | ~~**API 配置页面刷新后丢失**~~ | ~~每次刷新后用户需重新填写 provider / API Key / 模型名，体验差~~ **✓ 已修复：`setup()` 通过 `localStorage`（键名 `npc_api_provider`、`npc_api_key`、`npc_api_model`）在加载时自动回填、在 `input`/`change` 事件时实时保存。** | ~~将表单输入持久化到 localStorage~~ |
 | 8 | **`README.md` 内容极少** | 新开发者无法快速了解如何启动项目、如何配置 API Key | 补充：安装说明、`config.local.js` 配置方法、运行方式、项目背景 |
 | 9 | **无任何自动化测试** | 核心函数（`updateCandorAndColor`, `mixColors`, `normalizeSchema`）均为纯函数，天然可测 | 引入 `Vitest` 或原生 `Node.js test runner` 对纯函数层添加单元测试 |
 
@@ -394,8 +426,14 @@ return { ...character, currentCandor: newCandor, currentColor: newColor };
 
 ### 8.3 mutableSubconscious 生命周期
 
-每个 NPC 的 `mutableSubconscious` 在 `characters.js` 中以空值初始化。导入存档后由 `NPCConfig.injectSubconscious` 写入 `baseCharacters`，并由 `DialogueState.patchCharacter` 同步到活跃的 `state.characters`。`nextLoopPromptPatch` 非空时自动追加到 systemPrompt（本页面生命周期内单次生效）。
+每个 NPC 的 `mutableSubconscious` 在 `characters.js` 中以空值初始化。
+
+**导入阶段**：`loop.js` 的 `injectArchive` 先调用 `DialogueState.resetForNewLoop()` 清空状态，再调用 `NPCConfig.injectSubconscious` 将数据写入 `baseCharacters`（幂等：以 `_originalSystemPrompt` 为基准覆盖写入 `systemPrompt`），最后通过 `DialogueState.patchCharacter` 将 `baseCharacters` 的规范值同步到活跃的 `state.characters`。
+
+**结算阶段**：`ending.js` 在 stage 3 全部完成后，非阻塞地对三个 NPC 并行调用「高维命运观测者」结算 Prompt（`runAllSubconsciousSettlements`）。结果写入 `endingState.dialogueSnapshot.characters[].mutableSubconscious` 的三个叙事字段（`subconsciousImpression`、`thresholdAdjustment`、`nextLoopPromptPatch`）。`dejaVuLevel` 始终由 `buildArchiveObject` 从 `currentCandor` 计算覆盖，不使用 AI 返回值。
+
+**导出阶段**：`buildArchiveObject` 从 `endingState.dialogueSnapshot` 读取已结算的 `mutableSubconscious`，写入 `loop_archive` JSON。下一周目导入时注入，实现情绪残留的跨轮传递。
 
 ---
 
-*文档终。此文档应在每次架构级别变更后同步更新。*
+*文档终。此文档应在每次架构级别变更后同步更新。最后同步：2026-03-11（API 配置持久化、error 角色过滤）*

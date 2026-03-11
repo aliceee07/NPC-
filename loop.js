@@ -70,34 +70,33 @@
 
   function injectArchive(archive) {
     if (!archive || !archive.characters) return;
+
+    // 先清空当前局所有对话状态，避免跨轮状态残留（closingStreaks / dialogueHistories / candor）
+    if (window.DialogueState && window.DialogueState.resetForNewLoop) {
+      window.DialogueState.resetForNewLoop();
+    }
+
     const chars = archive.characters;
     Object.keys(chars).forEach(function (charId) {
       const entry = chars[charId];
       if (!entry || !entry.mutableSubconscious) return;
       try {
-        // 数据层注入
+        // 数据层注入（幂等：characters.js 内已将 systemPrompt 重写为 _originalSystemPrompt + patch）
         if (window.NPCConfig && window.NPCConfig.injectSubconscious) {
           window.NPCConfig.injectSubconscious(charId, entry.mutableSubconscious);
         }
-        // 对话层同步
+        // 对话层同步：从 baseCharacters 读取注入后的规范值，避免重复追加
         if (window.DialogueState && window.DialogueState.patchCharacter) {
-          window.DialogueState.patchCharacter(charId, {
-            mutableSubconscious: entry.mutableSubconscious,
-          });
-          // 若有 nextLoopPromptPatch，同步更新 systemPrompt
-          if (entry.mutableSubconscious.nextLoopPromptPatch) {
-            const sc = window.DialogueState.getCharacters
-              ? window.DialogueState.getCharacters().find(function (c) {
-                  return c.id === charId;
-                })
-              : null;
-            if (sc && sc.systemPrompt) {
-              window.DialogueState.patchCharacter(charId, {
-                systemPrompt: sc.systemPrompt + "\n\n【前世记忆补丁】\n" +
-                  entry.mutableSubconscious.nextLoopPromptPatch,
-              });
+          const patch = { mutableSubconscious: entry.mutableSubconscious };
+          if (window.NPCConfig && window.NPCConfig.baseCharacters) {
+            const basChar = window.NPCConfig.baseCharacters.find(function (c) {
+              return c.id === charId;
+            });
+            if (basChar) {
+              patch.systemPrompt = basChar.systemPrompt;
             }
           }
+          window.DialogueState.patchCharacter(charId, patch);
         }
       } catch (err) {
         console.error("[loop.js] injectArchive error for", charId, err);

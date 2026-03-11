@@ -18,17 +18,29 @@
 
   /* ─── Config helpers ─────────────────────────────────────── */
 
+  function getApiProvider() {
+    const el = document.getElementById("api-provider-select");
+    return (el ? el.value : "") || window.AI_PROVIDER || "gemini";
+  }
+
   function getApiKey() {
     const el = document.getElementById("api-key-input");
     const inputVal = el ? el.value.trim() : "";
-    /* 优先级：页面输入框 > config.local.js > 空 */
-    return inputVal || window.GEMINI_PRESET_KEY || "";
+    if (inputVal) return inputVal;
+    /* 优先级：页面输入框 > config.local.js 对应来源 > 空 */
+    return getApiProvider() === "siliconflow"
+      ? (window.SILICONFLOW_PRESET_KEY || "")
+      : (window.GEMINI_PRESET_KEY || "");
   }
 
   function getModelName() {
     const el = document.getElementById("model-name-input");
-    /* 优先级：页面输入框 > config.local.js > 默认值 */
-    return (el ? el.value.trim() : "") || window.GEMINI_PRESET_MODEL || "gemini-2.0-flash";
+    const inputVal = el ? el.value.trim() : "";
+    if (inputVal) return inputVal;
+    /* 优先级：页面输入框 > config.local.js 对应来源 > 默认值 */
+    return getApiProvider() === "siliconflow"
+      ? (window.SILICONFLOW_PRESET_MODEL || "Qwen/Qwen2.5-72B-Instruct")
+      : (window.GEMINI_PRESET_MODEL || "gemini-2.0-flash");
   }
 
   function getActiveCharacter() {
@@ -190,34 +202,11 @@
     list.insertBefore(item, list.firstChild);
   }
 
-  /* ─── Core Gemini Caller ─────────────────────────────────── */
+  /* ─── Core AI Callers ────────────────────────────────────── */
 
-  /**
-   * Calls the Gemini REST API.
-   *
-   * Fixes vs previous version:
-   * 1. camelCase body fields: systemInstruction, generationConfig,
-   *    responseMimeType, responseSchema (snake_case caused 400 errors).
-   * 2. No `role` inside systemInstruction (also caused 400).
-   * 3. Extracts thinking tokens (parts with thought:true) separately.
-   * 4. Appends every call result to the AI sidebar.
-   */
-  async function callGemini(options) {
-    const { label, systemPrompt, messages, responseSchema, isEndingPhase } = options || {};
+  async function callGeminiProvider(options, apiKey, modelName) {
+    const { label, systemPrompt, messages, responseSchema } = options || {};
 
-    const apiKey = getApiKey();
-    if (!apiKey) {
-      const mock = mockResponse(isEndingPhase);
-      appendAiOutput({
-        label: (label || "AI 响应") + " [本地模拟]",
-        parsed: mock,
-      });
-      return mock;
-    }
-
-    const modelName = getModelName();
-    /* systemInstruction / responseSchema are v1beta-only features.
-       v1beta uses camelCase field names. */
     const url =
       "https://generativelanguage.googleapis.com/v1beta/models/" +
       encodeURIComponent(modelName) +
@@ -229,8 +218,6 @@
       parts: [{ text: m.content || "" }],
     }));
 
-    /* v1beta endpoint uses camelCase.
-       systemInstruction must NOT have a role field. */
     const body = {
       systemInstruction: systemPrompt
         ? { parts: [{ text: systemPrompt }] }
@@ -255,9 +242,7 @@
 
       rawJson = await res.json();
 
-      /* Split thinking parts from text parts */
-      const parts =
-        rawJson?.candidates?.[0]?.content?.parts || [];
+      const parts = rawJson?.candidates?.[0]?.content?.parts || [];
       const thinkingText = parts
         .filter((p) => p.thought === true)
         .map((p) => p.text || "")
@@ -274,12 +259,7 @@
         const errMsg =
           rawJson?.error?.message ||
           `HTTP ${res.status}: ${JSON.stringify(rawJson).slice(0, 200)}`;
-        appendAiOutput({
-          label: label || "AI 响应",
-          error: errMsg,
-          rawJson,
-          usage,
-        });
+        appendAiOutput({ label: label || "AI 响应", error: errMsg, rawJson, usage });
         throw new Error(`Gemini API 返回错误状态码: ${res.status} — ${errMsg}`);
       }
 
@@ -305,14 +285,124 @@
       return parsed || {};
     } catch (err) {
       if (rawJson === null) {
-        /* Network-level failure */
-        appendAiOutput({
-          label: label || "AI 响应",
-          error: err.message || String(err),
-        });
+        appendAiOutput({ label: label || "AI 响应", error: err.message || String(err) });
       }
       throw err;
     }
+  }
+
+  async function callSiliconFlowProvider(options, apiKey, modelName) {
+    const { label, systemPrompt, messages, responseSchema } = options || {};
+
+    const url = "https://api.siliconflow.cn/v1/chat/completions";
+
+    /* 将对话历史转换为 OpenAI 格式，system prompt 作为首条 system 消息 */
+    const openAiMessages = [];
+    let effectiveSystemPrompt = systemPrompt || "";
+    if (responseSchema) {
+      effectiveSystemPrompt +=
+        "\n\n请严格按照以下 JSON Schema 返回纯 JSON，不得包含任何多余文字：\n" +
+        JSON.stringify(responseSchema);
+    }
+    if (effectiveSystemPrompt) {
+      openAiMessages.push({ role: "system", content: effectiveSystemPrompt });
+    }
+    const VALID_SF_ROLES = new Set(["user", "assistant", "system", "tool"]);
+    (messages || []).forEach((m) => {
+      const role = m.role === "model" ? "assistant" : m.role;
+      if (!VALID_SF_ROLES.has(role)) return;
+      openAiMessages.push({ role, content: m.content || "" });
+    });
+
+    const body = {
+      model: modelName,
+      messages: openAiMessages,
+      response_format: responseSchema ? { type: "json_object" } : undefined,
+    };
+
+    let rawJson = null;
+
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer " + apiKey,
+        },
+        body: JSON.stringify(body),
+      });
+
+      rawJson = await res.json();
+
+      /* 归一化 usage 字段，与 Gemini 格式保持一致供 appendAiOutput 复用 */
+      const sfUsage = rawJson?.usage || null;
+      const usage = sfUsage
+        ? {
+            promptTokenCount: sfUsage.prompt_tokens,
+            candidatesTokenCount: sfUsage.completion_tokens,
+          }
+        : null;
+
+      if (!res.ok) {
+        const errMsg =
+          rawJson?.error?.message ||
+          `HTTP ${res.status}: ${JSON.stringify(rawJson).slice(0, 200)}`;
+        appendAiOutput({ label: label || "AI 响应", error: errMsg, rawJson, usage });
+        throw new Error(`硅基流动 API 返回错误状态码: ${res.status} — ${errMsg}`);
+      }
+
+      const textContent = rawJson?.choices?.[0]?.message?.content || "";
+
+      let parsed = null;
+      try {
+        parsed = textContent ? JSON.parse(textContent) : null;
+      } catch (_) {
+        parsed = null;
+      }
+
+      appendAiOutput({
+        label: label || "AI 响应",
+        rawJson,
+        parsed,
+        usage,
+      });
+
+      if (!parsed && responseSchema) {
+        throw new Error("硅基流动响应无法解析为预期 JSON。");
+      }
+
+      return parsed || {};
+    } catch (err) {
+      if (rawJson === null) {
+        appendAiOutput({ label: label || "AI 响应", error: err.message || String(err) });
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * 公共路由入口（签名不变，ending.js / loop.js 均通过此函数调用）。
+   * 无 API Key 时降级为本地模拟；有 Key 时按 provider 路由至对应实现。
+   */
+  async function callGemini(options) {
+    const { label, isEndingPhase } = options || {};
+
+    const apiKey = getApiKey();
+    if (!apiKey) {
+      const mock = mockResponse(isEndingPhase);
+      appendAiOutput({
+        label: (label || "AI 响应") + " [本地模拟]",
+        parsed: mock,
+      });
+      return mock;
+    }
+
+    const modelName = getModelName();
+    const provider  = getApiProvider();
+
+    return provider === "siliconflow"
+      ? callSiliconFlowProvider(options, apiKey, modelName)
+      : callGeminiProvider(options, apiKey, modelName);
   }
 
   function mockResponse(isEndingPhase) {
@@ -540,6 +630,40 @@
 
   /* ─── Setup ──────────────────────────────────────────────── */
 
+  const PROVIDER_DEFAULTS = {
+    gemini: {
+      modelPlaceholder: "如 gemini-2.0-flash / gemini-2.5-pro-preview",
+      modelDefault: () => window.GEMINI_PRESET_MODEL || "gemini-2.0-flash",
+      keyPlaceholder: "粘贴 Gemini API Key（仅保存在内存）",
+      hint: "支持思考的模型将在侧边栏显示思考过程",
+    },
+    siliconflow: {
+      modelPlaceholder: "如 Qwen/Qwen2.5-72B-Instruct / deepseek-ai/DeepSeek-V3",
+      modelDefault: () => window.SILICONFLOW_PRESET_MODEL || "Qwen/Qwen2.5-72B-Instruct",
+      keyPlaceholder: "粘贴硅基流动 API Key（仅保存在内存）",
+      hint: "硅基流动兼容 OpenAI 接口，支持多种开源模型",
+    },
+  };
+
+  function applyProviderUi(provider) {
+    const cfg = PROVIDER_DEFAULTS[provider] || PROVIDER_DEFAULTS.gemini;
+    const keyInput   = document.getElementById("api-key-input");
+    const modelInput = document.getElementById("model-name-input");
+    const hintEl     = document.getElementById("model-hint");
+
+    if (keyInput)   keyInput.placeholder   = cfg.keyPlaceholder;
+    if (modelInput) {
+      modelInput.placeholder = cfg.modelPlaceholder;
+      /* 仅在输入框为空或仍是另一个来源的默认值时自动切换，不覆盖用户手动填写的值 */
+      const otherProvider = provider === "gemini" ? "siliconflow" : "gemini";
+      const otherDefault  = PROVIDER_DEFAULTS[otherProvider].modelDefault();
+      if (!modelInput.value.trim() || modelInput.value.trim() === otherDefault) {
+        modelInput.value = cfg.modelDefault();
+      }
+    }
+    if (hintEl) hintEl.textContent = cfg.hint;
+  }
+
   function setup() {
     /* Character buttons */
     document.querySelectorAll(".character-button").forEach((btn) => {
@@ -559,6 +683,46 @@
           e.preventDefault();
           handleSend();
         }
+      });
+    }
+
+    /* Provider selector + 持久化恢复 */
+    const providerSelect = document.getElementById("api-provider-select");
+    const keyInput       = document.getElementById("api-key-input");
+    const modelInput     = document.getElementById("model-name-input");
+
+    const LS_PROVIDER = "npc_api_provider";
+    const LS_KEY      = "npc_api_key";
+    const LS_MODEL    = "npc_api_model";
+
+    /* 读取上次保存的配置，回退到 config.local.js 预设 */
+    const savedProvider = localStorage.getItem(LS_PROVIDER);
+    const savedKey      = localStorage.getItem(LS_KEY);
+    const savedModel    = localStorage.getItem(LS_MODEL);
+
+    if (providerSelect) {
+      const initialProvider = savedProvider || window.AI_PROVIDER || "gemini";
+      providerSelect.value = initialProvider;
+      applyProviderUi(initialProvider);
+
+      providerSelect.addEventListener("change", () => {
+        const p = providerSelect.value;
+        localStorage.setItem(LS_PROVIDER, p);
+        applyProviderUi(p);
+      });
+    }
+
+    if (keyInput) {
+      if (savedKey) keyInput.value = savedKey;
+      keyInput.addEventListener("input", () => {
+        localStorage.setItem(LS_KEY, keyInput.value.trim());
+      });
+    }
+
+    if (modelInput) {
+      if (savedModel) modelInput.value = savedModel;
+      modelInput.addEventListener("input", () => {
+        localStorage.setItem(LS_MODEL, modelInput.value.trim());
       });
     }
 
@@ -631,6 +795,27 @@
     state.characters[idx] = { ...state.characters[idx], ...patch };
   }
 
+  /* ─── resetForNewLoop ────────────────────────────────────── */
+  /* 在导入新存档前调用，将对话状态彻底清空：                     */
+  /*   · closingStreaks 全部归零（消除跨轮"永久关闭"残留）        */
+  /*   · dialogueHistories 全部清空                              */
+  /*   · currentCandor 归零（初始值均为 0，归零 = 恢复初始）      */
+  /* 归零后触发渲染刷新，保证 UI 与状态同步。                     */
+  function resetForNewLoop() {
+    state.characters = state.characters.map(function (c) {
+      return NPC_CONFIG.updateCandorAndColor(c, 0);
+    });
+    state.characters.forEach(function (c) {
+      state.dialogueHistories[c.id] = [];
+      state.closingStreaks[c.id] = 0;
+    });
+    renderDialogueHistory();
+    renderSceneCharacters();
+    renderCharacterButtons();
+    updateClosingHint();
+    updateInputState(false);
+  }
+
   window.DialogueState = {
     getSnapshot() {
       return {
@@ -643,5 +828,6 @@
     callGemini,
     appendAiOutput,
     patchCharacter,
+    resetForNewLoop,
   };
 })();

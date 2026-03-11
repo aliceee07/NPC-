@@ -369,7 +369,8 @@
         const sub = c.mutableSubconscious
           ? { ...c.mutableSubconscious }
           : { dejaVuLevel: 0, subconsciousImpression: "", thresholdAdjustment: "", nextLoopPromptPatch: "" };
-        // dejaVuLevel 覆盖为终局时的 currentCandor
+        // dejaVuLevel 由代码（currentCandor）决定，不使用 AI 结算返回的 deja_vu_level。
+        // 保持此优先级：代码值可信、AI 值仅供叙事参考（已体现在 nextLoopPromptPatch 中）。
         sub.dejaVuLevel = c.currentCandor || 0;
 
         characters[c.id] = {
@@ -466,6 +467,17 @@
     required: ["summary"],
   };
 
+  const SUBCONSCIOUS_SCHEMA = {
+    type: "object",
+    properties: {
+      deja_vu_level:           { type: "integer" },
+      subconscious_impression: { type: "string"  },
+      threshold_adjustment:    { type: "string"  },
+      next_loop_prompt_patch:  { type: "string"  },
+    },
+    required: ["deja_vu_level", "subconscious_impression", "threshold_adjustment", "next_loop_prompt_patch"],
+  };
+
   /* ═══════════════════════════════════════════════════════════
      SUMMARY  —  结算 Prompt，stage 3 完成后非阻塞触发
   ═══════════════════════════════════════════════════════════ */
@@ -498,6 +510,85 @@
     });
 
     return (r && r.summary) ? r.summary : "";
+  }
+
+  /* ═══════════════════════════════════════════════════════════
+     SUBCONSCIOUS SETTLEMENT  —  高维命运观测者，stage 3 后逐角色结算
+     为每个 NPC 生成下一轮潜意识残留，写入 dialogueSnapshot。
+  ═══════════════════════════════════════════════════════════ */
+
+  async function runSubconsciousSettlement(character, histories, p3Result, callGemini) {
+    const charName = character.name || character.id;
+
+    const sp = [
+      "<Role>",
+      `你是一个「高维命运观测者」。当前，玩家与 NPC ${charName} 完成了一次时空循环。`,
+      "你的任务是：根据本轮的对话历史和终局表现，为该 NPC 提取出「潜意识残留」，用于更新下一轮循环的设定。",
+      "</Role>",
+      "",
+      "<Rules>",
+      "1. 核心伤口不可改变：NPC 绝对不会记住上一轮的具体事件（不记得玩家说过什么话，不记得发生了袭击）。",
+      "2. 情绪残留法则：NPC 会保留对玩家的「直觉性情绪（既视感）」。",
+      "3. 演化微调：根据玩家本轮的干预程度，微调 NPC 下一轮的「压力反应」或「行动阈值」。",
+      "</Rules>",
+    ].join("\n");
+
+    const uc = [
+      "<Input>",
+      `- NPC 基础设定：${character.systemPrompt || "（无）"}`,
+      "",
+      "- 本轮对话历史：",
+      histText(histories, character.id) || "（无对话）",
+      "",
+      `- 本轮终局行为：行为：${p3Result.action || "（未知）"}　台词：「${p3Result.line || ""}」`,
+      "</Input>",
+      "",
+      "<OutputFormat>",
+      "请严格输出以下 JSON 格式，不要包含任何其他文字：",
+      "{",
+      '  "deja_vu_level": "[0-5的整数，代表对玩家的熟悉/警惕程度]",',
+      '  "subconscious_impression": "[一句话描述：下一轮见到玩家时，NPC 第一眼产生的潜意识直觉]",',
+      '  "threshold_adjustment": "[对行动阈值的微调说明]",',
+      '  "next_loop_prompt_patch": "[一段直接追加到下一轮 System Prompt 里的文字，不超过50字]"',
+      "}",
+      "</OutputFormat>",
+    ].join("\n");
+
+    const r = await callGemini({
+      label: `${charName} · 潜意识结算`,
+      systemPrompt: sp,
+      messages: [{ role: "user", content: uc }],
+      responseSchema: SUBCONSCIOUS_SCHEMA,
+      isEndingPhase: true,
+    });
+
+    return r || null;
+  }
+
+  async function runAllSubconsciousSettlements(characters, histories, p3Results, callGemini) {
+    await Promise.all(characters.map(async (c) => {
+      try {
+        const p3 = p3Results[c.id] || {};
+        const result = await runSubconsciousSettlement(c, histories, p3, callGemini);
+        if (result && endingState.dialogueSnapshot) {
+          const snap = endingState.dialogueSnapshot;
+          const idx = snap.characters.findIndex((sc) => sc.id === c.id);
+          if (idx >= 0) {
+            snap.characters[idx].mutableSubconscious = {
+              // dejaVuLevel 由 buildArchiveObject 从 currentCandor 计算覆盖，此处占位
+              dejaVuLevel:            snap.characters[idx].mutableSubconscious
+                                        ? snap.characters[idx].mutableSubconscious.dejaVuLevel
+                                        : 0,
+              subconsciousImpression: result.subconscious_impression || "",
+              thresholdAdjustment:    result.threshold_adjustment    || "",
+              nextLoopPromptPatch:    result.next_loop_prompt_patch   || "",
+            };
+          }
+        }
+      } catch (err) {
+        console.error("[ending.js] subconscious settlement failed for", c.id, err);
+      }
+    }));
   }
 
   /* ═══════════════════════════════════════════════════════════
@@ -622,6 +713,12 @@
         endingState.loopSummary = s;
         updateSummaryDom(s);
       })
+      .catch(() => {});
+
+    /* ── 高维命运观测者结算（非阻塞，与 runSummary 并行触发）── */
+    /* 结果写入 endingState.dialogueSnapshot.characters[].mutableSubconscious */
+    /* buildArchiveObject 读 snapshot，导出时自动包含结算内容。               */
+    runAllSubconsciousSettlements(characters, histories, p3Results, callGemini)
       .catch(() => {});
   }
 

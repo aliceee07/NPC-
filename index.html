@@ -27,14 +27,21 @@
       </div>
       <div class="header-config">
         <div class="config-row">
+          <label for="api-provider-select">来源</label>
+          <select id="api-provider-select">
+            <option value="gemini">Google Gemini</option>
+            <option value="siliconflow">硅基流动</option>
+          </select>
+        </div>
+        <div class="config-row">
           <label for="api-key-input">API Key</label>
-          <input id="api-key-input" type="password" placeholder="粘贴 Gemini API Key（仅保存在内存）" />
+          <input id="api-key-input" type="password" placeholder="粘贴 API Key（仅保存在内存）" />
         </div>
         <div class="config-row">
           <label for="model-name-input">模型</label>
           <input id="model-name-input" type="text" value="gemini-2.0-flash"
-            placeholder="如 gemini-2.0-flash / gemini-2.5-pro-preview" />
-          <span class="config-hint">支持思考的模型将在侧边栏显示思考过程</span>
+            placeholder="模型名称" />
+          <span class="config-hint" id="model-hint">支持思考的模型将在侧边栏显示思考过程</span>
         </div>
       </div>
     </header>

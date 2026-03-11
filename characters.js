@@ -208,10 +208,14 @@ false：玩家冷淡、不回应你的情感、或明显在走程序
     },
   ];
 
+  /* 在任何 injectSubconscious 调用发生之前，对每个角色固化原始 systemPrompt。 */
+  /* 这是幂等注入的基准：无论注入多少次，始终从此快照追加，不会叠加。           */
+  baseCharacters.forEach(function (c) { c._originalSystemPrompt = c.systemPrompt; });
+
   /* ─── injectSubconscious ─────────────────────────────────── */
   /* 将导入的 mutableSubconscious 写入 baseCharacters 对应项。   */
-  /* 若 nextLoopPromptPatch 非空，追加到 systemPrompt。          */
-  /* 每次页面生命周期内应只调用一次（由 loop.js 保证）。          */
+  /* 若 nextLoopPromptPatch 非空，重写 systemPrompt（幂等：      */
+  /* 始终 = _originalSystemPrompt + patch，多次调用结果相同）。  */
   function injectSubconscious(charId, data) {
     const char = baseCharacters.find(function (c) { return c.id === charId; });
     if (!char) return;
@@ -222,7 +226,9 @@ false：玩家冷淡、不回应你的情感、或明显在走程序
       nextLoopPromptPatch:    data.nextLoopPromptPatch     || "",
     };
     if (data.nextLoopPromptPatch) {
-      char.systemPrompt += "\n\n【前世记忆补丁】\n" + data.nextLoopPromptPatch;
+      char.systemPrompt = char._originalSystemPrompt + "\n\n【前世记忆补丁】\n" + data.nextLoopPromptPatch;
+    } else {
+      char.systemPrompt = char._originalSystemPrompt;
     }
   }
 
