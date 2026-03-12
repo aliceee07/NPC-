@@ -317,4 +317,97 @@ AI 完成代码修改后，在回复用户前，应确认以下所有项目：
 
 ---
 
+---
+
+## 8. 三 Agent 自动流使用说明
+
+本节描述基于 Cursor Agent Skills 的三阶段自动化工作流：**Review → Implement → Deploy Check**。三个 Agent 通过文件传递状态，不依赖对话上下文，可独立触发也可自动串联。
+
+---
+
+### 8.1 技能文件位置
+
+```
+.cursor/
+├── skills/
+│   ├── review/SKILL.md          # Agent 1：任务审查
+│   ├── implement/SKILL.md       # Agent 2：代码实现 + 自审
+│   └── deploy-check/SKILL.md    # Agent 3：最终验收
+└── agent-output/
+    ├── review_output.md         # Agent 1 → Agent 2 的中转文件
+    └── implement_output.md      # Agent 2 → Agent 3 的中转文件
+```
+
+---
+
+### 8.2 触发方式
+
+#### 自动触发（推荐）
+
+Cursor Agent 会根据技能的 `description` 字段自动判断何时调用：
+
+- **review**：收到新的代码修改任务 prompt 时，Agent 在执行任何文件编辑前自动触发
+- **implement**：review 输出 PASS 后，Agent 自动读取 `review_output.md` 并触发实现
+- **deploy-check**：implement 输出 READY 后，Agent 自动读取 `implement_output.md` 并触发验收
+
+#### 手动触发（显式调用）
+
+在 Agent 对话框中输入 `/` 并搜索技能名称：
+
+```
+/review          # 手动触发审查（适用于需要重新审查的场景）
+/implement       # 手动触发实现（适用于 review 已 PASS 但未自动触发的场景）
+/deploy-check    # 手动触发验收（适用于想单独验收已有实现的场景）
+```
+
+---
+
+### 8.3 标准工作流
+
+```
+1. 开发者提交任务 prompt（使用 §0 或 §3 的模板）
+        ↓
+2. review skill 自动触发
+   → 读取 ARCHITECTURE.md + 相关源文件
+   → 输出 review_output.md
+        ↓
+3a. 结论 PASS → implement skill 自动触发
+   → 读取 review_output.md
+   → 实现代码 + 自审（最多3次）
+   → 输出 implement_output.md
+        ↓
+4a. 结论 READY → deploy-check skill 自动触发
+   → 五项验收检查
+   → 在对话中输出最终报告
+        ↓
+5a. APPROVED → 任务完成，按报告建议同步更新 ARCHITECTURE.md
+```
+
+---
+
+### 8.4 异常处理路径
+
+| 阶段 | 状态 | 处理方式 |
+|---|---|---|
+| review 输出 | `BLOCK` | 查看 `review_output.md` 中列出的阻塞原因，补充任务描述后重新触发 `/review` |
+| implement 输出 | `FAILED` | 查看 `implement_output.md` 中的遗留问题，人工修复或调整方案后重新触发 `/implement` |
+| deploy-check 输出 | `REJECTED` | 查看验收报告中的「修复指引」，修复后重新触发 `/implement`，再触发 `/deploy-check` |
+
+---
+
+### 8.5 每次新任务前的准备
+
+**必须在开始新任务前清空中转文件**，防止上一次任务的状态影响当前任务：
+
+在 Agent 对话中说：「请清空 `.cursor/agent-output/` 下的两个文件」，或手动将 `review_output.md` 和 `implement_output.md` 内容清空（文件保留，内容清空即可）。
+
+---
+
+### 8.6 设计说明
+
+- **无对话上下文依赖**：三个 Agent 仅通过 Markdown 文件传递状态，即使对话被中断也可从任意阶段恢复
+- **自审闭环**：implement skill 内置最多 3 次自审循环，绝大多数格式/约定问题可在交付前自动修复
+- **deploy-check 不写文件**：最终验收报告直接输出到对话，供人工确认，避免文件状态混乱
+- **与现有工作流兼容**：三 Agent 流是 §0 标准启动 Prompt 的自动化增强，两种方式可混用
+
 *文档终。本文档应在项目约定发生变化时同步更新。*
