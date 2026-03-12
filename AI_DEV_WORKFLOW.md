@@ -23,6 +23,7 @@
 - NPC 数据 / 颜色逻辑      → characters.js
 - 对话流程 / AI 调用 / 渲染  → dialogue.js（此文件极脆弱，凡涉及对话逻辑必须完整阅读）
 - 终局演出 / 分屏 / 导出    → ending.js
+- 周目入口 / 存档导入注入   → loop.js
 - 视觉样式 / 动画           → style.css
 - API Key / 模型配置        → config.example.js
 
@@ -116,6 +117,7 @@
 | NPC 角色数据、颜色逻辑 | `characters.js` |
 | 对话流程、AI 调用、状态管理、DOM 渲染 | `dialogue.js`（全文，该文件极脆弱） |
 | 终局演出、分屏叙事、导出 | `ending.js` |
+| 周目入口、存档导入注入 | `loop.js` |
 | 视觉样式、动画 | `style.css` |
 | API Key / 模型配置 | `config.example.js` |
 
