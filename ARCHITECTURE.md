@@ -29,9 +29,10 @@
 ```
 g:\works\NPC-\
 │
-├── index.html            # [唯一 HTML 入口] 定义完整 DOM 结构；通过顺序 <script> 标签
-│                         # 编排所有 JS 模块的加载顺序（顺序即依赖）。
-│                         # 关键 DOM 节点：#intro-overlay（入场遮罩，渲染后由内联脚本移除）
+├── index.html            # [唯一 HTML 入口] 内联 intro `#intro-overlay`；header 含 API 配置区与
+│                         # `#test-mode-checkbox`（`npc_test_mode`）；`#timeline-actions` 仅 `#ending-button`；
+│                         # 主界面 `#notebook-panel` / `#notebook-body`（只读上轮 `archive.summary` 占位）；
+│                         # 通过顺序 <script> 标签编排所有 JS 模块的加载顺序（顺序即依赖）。
 │
 ├── style.css             # [全局样式层] 所有 CSS 均在此；包含入场遮罩动画、场景动画、
 │                         # 对话气泡、终局遮罩、周目选择遮罩等全部视觉。
@@ -39,6 +40,16 @@ g:\works\NPC-\
 ├── characters.js         # [数据定义层] NPC 原始数据、颜色计算工具函数。
 │                         # 职责边界：只管"角色是什么"，不管"对话怎么发生"。
 │                         # 对外暴露：window.NPCConfig
+│
+├── notebook-config.js    # [配置层 · F-004] 跨周目笔记本静态骨架表。
+│                         # LOOP_NOTEBOOK_TONE（1–10 emotion/memoryLevel/infoSnippet/headerLabel）。
+│                         # 职责边界：只持有静态配置；不发请求、不写 DOM。
+│                         # 对外暴露：window.NotebookConfig
+│
+├── loop-script.js        # [配置层] 周目剧本：1–10 周目三角色 × 两选项的 quick reply 文本、
+│                         # 测试模式 mock 回复（reply/touched/closing_signal）、测试占位日记正文。
+│                         # 职责边界：只持有静态剧本；不发请求、不写 DOM。
+│                         # 对外暴露：window.LoopScript
 │
 ├── dialogue.js           # [对话核心层] 对话状态、AI 调用、DOM 渲染全部集中于此。
 │                         # 职责最重，是项目最核心也是最脆弱的文件。
@@ -80,7 +91,9 @@ g:\works\NPC-\
 │  [周目入口层]   loop.js                                   │
 │                 #loop-select-overlay（全屏黑底遮罩，       │
 │                 sessionStorage 自动导入 / 手动 JSON 导入） │
-│                 window.LoopState { getLoopIndex }         │
+│                 window.LoopState { getLoopIndex,          │
+│                   jumpToTestLoop, getNotebookEntries,     │
+│                   getLastLoopSummary, … }                 │
 └──────────────────────┬──────────────────────────────────┘
                        │ 退出后进入
 ┌──────────────────────▼──────────────────────────────────┐
@@ -110,11 +123,14 @@ g:\works\NPC-\
 │             { getSnapshot, getCharacters,                │
 │               getDialogueHistories, callGemini,          │
 │               appendAiOutput, patchCharacter,            │
-│               resetForNewLoop }                          │
-│             内部：callGeminiProvider / callSiliconFlow-  │
-│             Provider（由 callGemini 按 AI_PROVIDER 路由） │
+│               resetForNewLoop, abortAllRequests,         │
+│               tryAdvanceUnlock,                          │
+│               advanceOrTriggerEnding, isUnlocked, isPassed } │
+│             内部：callGemini（测试模式 / 无 Key 时按 responseSchema     │
+│             生成占位；否则 Provider 路由）、callGeminiProvider /        │
+│             callSiliconFlow-Provider                                     │
 └──────────────────────┬──────────────────────────────────┘
-                       │ 全局变量消费（触发时机：#ending-button click）
+                       │ 全局变量消费（`#ending-button`：`DialogueState.advanceOrTriggerEnding()` → 需在 char3 上才 `runEnding`）
 ┌──────────────────────▼──────────────────────────────────┐
 │  [终局层]   ending.js                                    │
 │             window.EndingState                           │
@@ -130,6 +146,7 @@ g:\works\NPC-\
 - **通信媒介**：`window` 全局对象作为模块间唯一的"接口总线"，无依赖注入，无事件总线。
 - **无循环依赖**。
 - **`index.html` 中的 `<script>` 加载顺序即隐式依赖声明**，改变顺序会导致运行时错误。
+- 当前顺序：`config.local.js` → `characters.js` → **`notebook-config.js`** → **`loop-script.js`** → `dialogue.js` → `ending.js` → `loop.js` → 内联脚本。`notebook-config.js` / `loop-script.js` 都是无依赖的静态配置层；`dialogue.js`（quick reply 渲染 + 测试模式短路 mock）、`loop.js`（`buildTestNotebookBody`）、`ending.js`（notebook prompt 与 8.3 跨周目剧本约束）通过 `window.LoopScript` 在运行时消费。
 
 ---
 
@@ -141,9 +158,11 @@ g:\works\NPC-\
 
 | 状态位置 | 内容 | 生命周期 |
 |---|---|---|
-| `dialogue.js` 内部 `const state = {}` | `characters[]`（含坦诚度、mutableSubconscious）、`dialogueHistories{}`、`closingStreaks{}` | 页面整个生命周期 |
+| `dialogue.js` 内部 `const state = {}` | `characters[]`（含坦诚度、mutableSubconscious）、`dialogueHistories{}`、`closingStreaks{}`、`unlockedChars`、`passedChars`、**`readOnly`**（查看已离开角色时为只读）、`activeRequests{ charId: AbortController }`（也作为当前角色“思考中”门禁来源） | 页面整个生命周期；`activeRequests` 仅记录当前 in-flight 请求，完成或取消后清理 |
 | `ending.js` 内部 `window.EndingState` | 终局快照、各阶段 AI 结果、`loopSummary`（结算一句话总结） | 终局触发后 |
-| `loop.js` 内部 `loopState` | `currentLoopIndex`（当前周目编号） | 页面整个生命周期 |
+| `loop.js` 内部 `loopState` | `currentLoopIndex`（当前周目编号）、`lastLoopSummary`（上一周目 `archive.summary`，由 `injectArchive` 写入）、**`notebook[]`（跨周目日记 entry 数组，由 `injectArchive` 读入、`ending.js` 通过 `appendNotebookEntry` / `replaceLastNotebookEntry` 写回）** | 页面整个生命周期 |
+| `notebook-config.js`（无可变状态） | `LOOP_NOTEBOOK_TONE`（1–10 静态骨架表，AI 仅看当前周目 entry） | 页面整个生命周期（只读） |
+| `loop-script.js`（无可变状态） | `QUICK_REPLIES_BY_LOOP`（1–10 三角色 × 两选项的 quick reply 文本 + 测试模式 mock）、`TEST_NOTEBOOK_BODY_BY_LOOP`（测试占位日记正文） | 页面整个生命周期（只读） |
 | `window.AI_PROVIDER` | 当前选择的 API 来源（`"gemini"` \| `"siliconflow"`） | 页面整个生命周期 |
 | `window.GEMINI_PRESET_KEY/MODEL` | Gemini 用户配置 | 页面整个生命周期 |
 | `window.SILICONFLOW_PRESET_KEY/MODEL` | 硅基流动用户配置 | 页面整个生命周期 |
@@ -158,16 +177,25 @@ g:\works\NPC-\
 [用户输入 #player-input]
          │
          ▼ handleSend()
-state.dialogueHistories[charId].push({ role: "user", content })
+若当前角色在 activeRequests 中已有 in-flight 请求 → 阻止重复发送（send/quick-reply/textarea disabled）
          │
-         ▼ callGemini()
-         ├── [无 API Key] → mockResponse() → 返回硬编码模拟数据
+         ▼ state.dialogueHistories[charId].push({ role: "user", content })
+         │
+         ▼ state.activeRequests[charId] = new AbortController()
+         │
+         ▼ callGemini({ signal })
+         ├── [测试模式 localStorage npc_test_mode=1] → 按 responseSchema 内省占位
+         ├── [无 API Key] → 同上占位（非对话场景沿用 schema）
          └── [有 API Key] → 按 provider 路由
-               ├── callGeminiProvider()：role 直接映射（"user"/"model"）
+              ├── callGeminiProvider()：
+                     白名单过滤（仅保留 "user"/"model"，
+                     "error"/"system" 等无效角色被丢弃）
+                     → role 映射后构建 contents
+                     → fetch({ signal })
                └── callSiliconFlowProvider()：
                      过滤非法 role（仅保留 "user"/"assistant"/"system"/"tool"，
                      "model" 转换为 "assistant"，"error" 等无效角色被丢弃）
-                     → fetch POST OpenAI 兼容 API
+                     → fetch POST OpenAI 兼容 API({ signal })
                    (system_instruction + filtered history + responseSchema)
                                          │
                                          ▼ 解析 JSON
@@ -175,14 +203,16 @@ state.dialogueHistories[charId].push({ role: "user", content })
                                          │
                  ┌───────────────────────┼────────────────────────┐
                  ▼                       ▼                        ▼
-  appendMessage("model", reply)   stepCandorAndColor()     closingStreaks[charId]++
-  → history.push(model msg)       → touched=true: +rise    → if >= 3: 对话关闭
-  → renderDialogueHistory()       → touched=false: -fall   → 插入系统提示消息
-    (全量重绘对话 DOM)              → updateCandorAndColor()
+  appendMessage("model", reply)   stepCandorAndColor()     closing_signal=true → 立即关闭
+  → history.push(model msg)       → touched=true: +rise    → closing_signal=false → streak 归零
+  → appendMessageToDom()          → touched=false: -fall   → 首次关闭时插入系统提示
+    (增量追加单条消息)              → updateCandorAndColor()
                                    → currentColor = mixColors()
                                    → renderSceneCharacters()
                                      (圆圈颜色渐变 + active class)
 ```
+
+切换角色、`advanceOrTriggerEnding()` 推进到下一人、`resetForNewLoop()` 或进入终局时，会取消对应角色或全部对话层 `activeRequests`。同角色重复发送不会再取消旧请求，而是在当前角色思考中禁用 `send-button`、quick reply 与 textarea。`AbortError` 只有在对应 `AbortController` 已由本地取消路径打标时才属于主动取消，调用方静默丢弃，不写回对话历史、不更新 candor/closing，也不追加红色错误消息；其他 HTTP、网络、JSON 解析或字段缺失错误必须展示给用户。
 
 ### 4.3 终局阶段数据流
 
@@ -193,21 +223,31 @@ state.dialogueHistories[charId].push({ role: "user", content })
 DialogueState.getSnapshot() → 深拷贝所有角色数据 + 对话历史
          │
          ▼ runProducer()
-4 个页面帧入队：
-  [0] 阶段一: 静态文案（根据 colorMood() 生成，立即 ready）
-  [1] 阶段二: 每个 NPC 的"即时行为"（异步 callGemini，slot loading → fillSlot）
-  [2] 阶段三: 每个 NPC 的"最终选择"（依赖阶段二结果，异步 callGemini）
-  [3] 尾声: summary block（响应式）+ 四按钮
+4 个页面帧入队（文案按 `LoopState.getLoopIndex()` 从 `ENDING_PHASE_BY_LOOP` 1–10 读取）：
+  [0] 阶段一: 纯叙述（`showNpcSlots: false`，无 API，可立即翻页）
+  [1] 阶段二: 纯叙述（同上）
+  [2] 阶段三: 叙述 + 三位 NPC 反应（仅本阶段 callGemini；prompt 仅告知「附近刚说过话的人被人捅了」，不含阶段一/二细节）
+  [3] 尾声: 轮回句（周目 3 为「买花」变体，其余多为「她闭上眼，然后又睁开」；8–10 为 `[待替换]` 占位）+ summary block + 四按钮
          │
-         ├─ stage 3 完成后（两者并行、非阻塞）：
-         │   ① runSummary() → endingState.loopSummary → updateSummaryDom() 响应式填入尾声页
+         ├─ stage 3 完成后（三者并行、非阻塞）：
+         │   ① runLoopMemory()（完整对话+终局→记忆整理）→ endingState.loopSummary → 尾声页
          │   ② runAllSubconsciousSettlements()（高维命运观测者，逐 NPC 并行）
+         │      → **输入仅含本轮对话历史 + currentCandor**，**不读取 stage1/2/3 的行为或台词**
+         │        （刻意切断终局事件对潜意识的污染：NPC 不应记住袭击或自己的终局选择）
+         │      → prompt 强约束：补丁文本主语 = NPC、宾语 = 「那个陌生人」(玩家)，
+         │        必须含 1–3 个对话里真实出现过的关键词，禁止 NPC 自身特征（背相机/书包/店家）
+         │        被错写成玩家特征，禁止出现死/刀/血/危险等终局词
          │      → 写入 endingState.dialogueSnapshot.characters[].mutableSubconscious
          │        { subconsciousImpression, thresholdAdjustment, nextLoopPromptPatch }
          │      → buildArchiveObject 读 snapshot 导出时自动包含结算内容
+         │   ③ runNotebookGeneration()（F-004c；**在 ① 完成后**再调）
+         │      输入：当周 tone 预设 + ① 的记忆整理正文 + 上页日记末尾 60 字（不再截断对话摘要）
+         │      7-8 周目 prompt 显式要求 `<del>` + 截断句、严禁错别字
+         │      成功 → LoopState.replaceLastNotebookEntry(真实 entry) 覆盖 runEnding 触发时已 append 的 fallback
+         │      失败 / 长度异常 / 含元信息 → 保留 fallback（body=""，弹层显示「这一轮的记忆模糊了……」）
          │
          ▼ createOverlay() → document.body 追加 #ending-overlay
-用户翻页（点击 / 60s 超时）→ advance()（翻页前检查当前帧所有 slots.ready）→ renderEntry()
+用户翻页（点击；等待阶段二/三 AI 时 footer 显示进度）→ advance()（翻页前检查当前帧所有 slots.ready）→ renderEntry()
          │
          ▼ [尾声页四按钮]
   ① 保存对话数据 → doExportTxt() → Blob → .txt（含初始人设）
@@ -222,7 +262,8 @@ DialogueState.getSnapshot() → 深拷贝所有角色数据 + 对话历史
 [尾声页「直接开启下一轮次」]
          │
          ▼ buildArchiveObject(currentIndex + 1)
-         │ → { loop_index, ran_at, characters:{ immutableCore, mutableSubconscious }, summary }
+         │ → { loop_index, ran_at, characters:{ immutableCore, mutableSubconscious }, summary,
+         │     notebook[] // F-004：跨周目主角第一人称日记数组，逐轮 append/replace }
          │
          ▼ sessionStorage.setItem('npc_pending_loop', JSON.stringify(archive))
          │
@@ -266,9 +307,10 @@ sessionStorage.getItem('npc_pending_loop')
 - 所有异步操作使用 `async/await` + `try/catch`。
 - AI 调用失败时，`callGemini` 返回 `null`，调用方（`handleSend`、`runEnding`）需检查 `null`。
 - Schema 解析失败时，`normalizeSchema()` 不抛出，返回原始值（防御性编程）。
-- API 调用失败时，`handleSend` 的 `catch` 及 null 检查会向对话框追加红色 `error` 类型的系统提示消息，告知用户发生了错误。**无全局错误边界**，对话流之外的异常仍仅打印到控制台。
-- `handleSend` 在 `await callGemini()` 返回后会核验 `state.currentCharacterId` 是否仍等于请求发起时的角色 id；若用户在等待期间切换了角色，则静默丢弃该回复，不写入历史也不触发任何渲染。
-- **`error` 角色消息过滤**：`appendMessage("error", ...)` 追加的错误提示消息会被存入 `dialogueHistories`（用于页面渲染），但 `callSiliconFlowProvider` 在构建请求体时会通过白名单（`VALID_SF_ROLES`）将其过滤，不发送给 API。`callGeminiProvider` 侧通过 `role !== "user"` 时全部映射为 `"model"` 的方式亦不会引发问题，但错误消息会以 `model` 角色进入 Gemini 上下文——这是一个已知的轻微不一致，尚未统一修复。
+- API 调用失败时，`handleSend` 的 `catch` 及 null/字段检查会 `console.error` 完整错误对象，并向 AI sidebar 与对话框追加红色 `error` 类型的系统提示消息，告知用户发生了错误。**无全局错误边界**，对话流之外的异常仍仅打印到控制台。
+- `AbortError` 只有在对应请求确认为本地代码主动取消（切换角色、推进下一人、进入终局、reset/reload 前 best-effort 取消）时才静默丢弃；不得仅凭 `err.name === "AbortError"` 或 `signal.aborted` 吞掉真实 fetch/HTTP/JSON 失败。同角色重复发送不属于取消路径，必须被 UI 思考态门禁阻止。
+- `handleSend` 在 `await callGemini()` 返回后会核验 `AbortController.signal`、`state.activeRequests[charId]` 与 `state.currentCharacterId` 是否仍匹配；若用户在等待期间切换了角色或发起了更新请求，则静默丢弃该回复，不写入历史也不触发任何渲染。
+- **`error` 角色消息过滤**：`appendMessage("error", ...)` 追加的错误提示消息会被存入 `dialogueHistories`（用于页面渲染），但在出站 API 请求时会被过滤：`callSiliconFlowProvider` 通过 `VALID_SF_ROLES` 白名单丢弃；`callGeminiProvider` 通过 `VALID_GEMINI_ROLES` 白名单（仅 `user`/`model`）丢弃。`system` 等 UI 专用角色同样不会进入任一 provider 的请求体。
 
 ### 5.4 不可变更新模式
 
@@ -280,7 +322,7 @@ return { ...character, currentCandor: newCandor, currentColor: newColor };
 
 ### 5.5 响应式 DOM 渲染模式
 
-项目无虚拟 DOM，使用**全量重绘**策略：每次状态变化后，对应的 `render*()` 函数清空容器 `innerHTML` 并重建所有 DOM 节点。适合当前对话数量规模，但有性能上限。
+项目无虚拟 DOM。列表型 UI 优先使用增量追加：对话区新增消息经 `appendMessageToDom()` 只插入一个 `.message-row`，AI sidebar 经 `appendAiOutput()` 插入单条输出；`renderDialogueHistory()` 保留为切换角色、初始化、`resetForNewLoop()` 与导入存档后的全量兜底。
 
 ### 5.6 candor 代码驱动累加约定
 
@@ -292,9 +334,9 @@ return { ...character, currentCandor: newCandor, currentColor: newColor };
 
 | NPC | rise | fall | 说明 |
 |---|---|---|---|
-| char1（她·蓝） | 1 | 1 | 双向缓慢，无声退潮 |
-| char2（他） | 1 | 6 | 上升缓慢，一次刺激直接归零（二元人格） |
-| char3（她·紫） | 1 | 1 | 双向缓慢，退潮一旦开始持续不停 |
+| char1（小一） | 1 | 1 | 双向缓慢，无声退潮 |
+| char2（小二） | 1 | 6 | 上升缓慢，一次刺激直接归零（二元人格） |
+| char3（三三） | 1 | 1 | 双向缓慢，退潮一旦开始持续不停 |
 
 `candor` 可退回 0（`mixColors` 传入 `factor=0` 时返回纯黑 `#000000`，代码已原生支持）。退潮触发条件由各 NPC `systemPrompt` 的 `【退潮触发】` 段落描述，速率由 `candorRates.fall` 保证。
 
@@ -314,7 +356,7 @@ return { ...character, currentCandor: newCandor, currentColor: newColor };
     "char1": {
       "immutableCore": {
         "id": "char1",
-        "name": "她·蓝",
+        "name": "小一",
         "targetColor": "#8B9EA8",
         "candorRates": { "rise": 1, "fall": 1 }
       },
@@ -328,13 +370,30 @@ return { ...character, currentCandor: newCandor, currentColor: newColor };
     "char2": { "...": "..." },
     "char3": { "...": "..." }
   },
-  "summary": "玩家与她·蓝建立了真实连结，但在危机时刻仍未能改变旁观者的沉默。"
+  "summary": "玩家与小一建立了真实连结，但在危机时刻仍未能改变旁观者的沉默。",
+  "notebook": [
+    {
+      "loopIndex": 1,
+      "headerLabel": "第一次轮回",
+      "body": "我醒来还什么都不知道……",
+      "tonePreset": {
+        "emotion": "初始无知、被杀后的惊惧、想找真相",
+        "memoryLevel": "low",
+        "infoSnippet": "...",
+        "headerLabel": "第一次轮回"
+      },
+      "generatedAt": "2026-05-19T05:00:00.000Z",
+      "source": "ai",
+      "error": null
+    }
+  ]
 }
 ```
 
 - `dejaVuLevel`：上轮终局时的 `currentCandor`（0–6），用作下轮"似曾相识"程度的数值参考
 - `nextLoopPromptPatch`：若非空，导入时自动追加到对应角色的 systemPrompt（`【前世记忆补丁】`）
-- `summary`：由结算 Prompt（ending.js 内 `runSummary()`）生成，若 API 调用失败则为空字符串
+- `summary`：由轮回记忆整理 Prompt（`runLoopMemory()`）生成，记录「与谁聊了、关系、值得记住的事、终局行为」；失败则为空字符串。日记生成复用此字段，不再单独截断对话摘要
+- `notebook[]`（F-004）：跨周目主角第一人称碎碎念日记，逐轮 append。entry 含 `loopIndex` / `headerLabel` / `body` / `tonePreset` 快照 / `generatedAt` / `source`（`ai` | `fallback` | `mock`）/ `error`。第 1 周目 UI 隐藏；第 2+ 周目右下角 64×64 图标按钮 + 居中弹层翻页。7-8 周目页眉「轮回了不知道多少次……」，正文允许 `<del>` 标签划字 + 截断句（严禁错别字）。失败兜底正文为空，UI 显示「这一轮的记忆模糊了……」。AI 仅看当前周目 `LOOP_NOTEBOOK_TONE[loopIndex]` 预设，不见全表。
 
 ---
 
@@ -344,11 +403,11 @@ return { ...character, currentCandor: newCandor, currentColor: newColor };
 > 该文件同时承担：状态管理、AI 调用、JSON 解析、DOM 渲染、事件绑定。任何修改都可能产生跨关注点的副作用。在修改前务必完整阅读全文。
 
 > **2. `<script>` 加载顺序不可随意调整**
-> `index.html` 中的脚本顺序是隐式的依赖声明：`dialogue.js` 在加载时立即访问 `window.NPCConfig`，`loop.js` 在加载时立即访问 `window.NPCConfig` 和 `window.DialogueState`，内联 intro-overlay 脚本必须在 `loop.js` 之后运行（loop.js 的 capture keydown 拦截器须先注册）。任何顺序调整都可能导致运行时崩溃或拦截器失效。
-> 当前顺序：`config.local.js` → `characters.js` → `dialogue.js` → `ending.js` → `loop.js` → 内联脚本。
+> `index.html` 中的脚本顺序是隐式的依赖声明：`dialogue.js` 在加载时立即访问 `window.NPCConfig`，`loop.js` 在加载时立即访问 `window.NPCConfig` 和 `window.DialogueState`，`ending.js` / `loop.js` 在终局/导入路径中访问 `window.NotebookConfig`，内联 intro-overlay 脚本必须在 `loop.js` 之后运行（loop.js 的 capture keydown 拦截器须先注册）。任何顺序调整都可能导致运行时崩溃或拦截器失效。
+> 当前顺序：`config.local.js` → `characters.js` → **`notebook-config.js`** → **`loop-script.js`** → `dialogue.js` → `ending.js` → `loop.js` → 内联脚本。
 
 > **3. `closingStreaks` 在单局内单向不可逆，但跨周目会被重置**
-> 某个角色的 `closingStreak` 一旦达到 `CLOSE_THRESHOLD`（3），该角色对话在**本局**永久关闭，无法通过任何用户操作恢复。这是刻意的设计决定。
+> 某个角色在单轮 AI 响应中返回 `closing_signal: true` 时，`closingStreak` 会立即设为 `CLOSE_THRESHOLD`（3），该角色对话在**本局**永久关闭，无法通过任何用户操作恢复。`closing_signal: false` 且尚未关闭时，streak 归零。这是刻意的设计决定。
 > 跨周目导入存档时，`loop.js` 的 `injectArchive` 会在注入前调用 `DialogueState.resetForNewLoop()`，将 `closingStreaks`、`dialogueHistories`、`currentCandor` 全部归零，保证新一周目以干净状态开始。✓ 已修复（陷阱 B）
 
 > ~~**4. `ending.js` 的 `#ending-panel` DOM 节点是死代码**~~
@@ -357,9 +416,10 @@ return { ...character, currentCandor: newCandor, currentColor: newColor };
 > **5. API Key 存在泄露风险**
 > Gemini API Key 以 `?key=` 形式附加在 `fetch` URL 的 query string 中；硅基流动 API Key 以 `Authorization: Bearer` 请求头形式发送。两者均会被浏览器 `devtools` 网络面板及任何代理日志捕获。作为 Demo 项目这是已知权衡，但若部署于公开环境，须通过后端代理隐藏 Key。
 > 此外，API Key 现在通过 `localStorage` 持久化（明文存储）。在共享设备上使用时需注意，其他访问该浏览器的用户可在 devtools 中直接读取 `localStorage.getItem('npc_api_key')`。
+>
+> **（控制台）CORS 与 `Authorization` 头**：跨域请求携带 `Authorization` 时，浏览器可能对远端返回的 `Access-Control-Allow-Headers: *` 打印弃用或策略类警告；属浏览器与服务商 CORS 配置问题，**不作为本 Demo 业务逻辑缺陷**。长期可由官方修正 CORS、或经同源代理、或改用不设该头的调用方式。
 
-> **7. `error` 角色消息在 Gemini provider 中未被过滤**
-> `appendMessage("error", ...)` 产生的错误提示消息会进入 `dialogueHistories`。`callSiliconFlowProvider` 通过白名单 `VALID_SF_ROLES` 正确过滤了这类消息。但 `callGeminiProvider` 对所有非 `"user"` 角色一律映射为 `"model"`，导致错误提示消息会以 `role: "model"` 混入 Gemini 上下文，污染 NPC 的对话记忆。若出现 NPC 突然"提及自己听不见"等异常表现，优先排查此问题。修复方向：在 `callGeminiProvider` 的 contents 构建处同样增加角色白名单过滤。
+> ~~**7. `error` 角色消息在 Gemini provider 中未被过滤**~~ **✓ 已修复（2026-05-18 性能修复包）**：`callGeminiProvider` 在构建 `contents` 时使用 `VALID_GEMINI_ROLES` 白名单，仅保留 `user`/`model`；`error`、`system` 等角色仍存入 `dialogueHistories` 供页面渲染，但不再进入 Gemini 请求上下文。
 
 > **6. `injectSubconscious` 的 `systemPrompt` 追加必须使用 `_originalSystemPrompt` 为基准**
 > `characters.js` 中每个角色在数组定义后立即快照 `_originalSystemPrompt`。`injectSubconscious` 必须写成 `char.systemPrompt = char._originalSystemPrompt + patch`（赋值覆盖），**不得使用 `+=`（追加）**。若改回追加形式，玩家在同一页面生命周期内多次导入存档时，补丁会叠加，AI 收到重复指令。✓ 已修复（陷阱 A）
@@ -379,9 +439,9 @@ return { ...character, currentCandor: newCandor, currentColor: newColor };
 
 | # | 问题 | 影响 | 建议方向 |
 |---|---|---|---|
-| 3 | **`renderDialogueHistory()` 全量重绘** | 随对话轮次增加，每次发送消息后整个对话 DOM 被销毁重建，性能随对话增长线性下降 | 改为增量追加：仅 `appendChild()` 新消息节点 |
-| 4 | **`colorMood()` 重复实现 `hexToRgb`** | `characters.js` 已有 `hexToRgb()`，`ending.js` 又自行实现了一遍相同逻辑 | 将 `hexToRgb` 移入 `window.NPCConfig` 工具函数并复用 |
-| ~~5~~ | ~~**角色 `name` 字段不唯一**~~ | ~~char1 和 char3 均为 `"她"`，导出文本中会出现歧义的 `【她】...【她】`~~ **✓ 已修复：char1 改为 `"她·蓝"`，char3 改为 `"她·紫"`。** | ~~为角色增加可读唯一标识（如 `"她（蓝）"`）或在导出时使用 `id`~~ |
+| ~~3~~ | ~~**`renderDialogueHistory()` 全量重绘**~~ | ~~随对话轮次增加，每次发送消息后整个对话 DOM 被销毁重建，性能随对话增长线性下降~~ **✓ 已修复（2026-05-18 性能修复包）：新增消息经 `appendMessageToDom()` 增量追加，`renderDialogueHistory()` 仅作兜底。** | ~~改为增量追加：仅 `appendChild()` 新消息节点~~ |
+| ~~4~~ | ~~**`colorMood()` 重复实现 `hexToRgb`**~~ | ~~`characters.js` 已有 `hexToRgb()`，`ending.js` 又自行实现了一遍相同逻辑~~ **✓ 已修复（2026-05-18 性能修复包）：`ending.js` 的 `colorMood()` 复用 `window.NPCConfig.hexToRgb`。** | ~~将 `hexToRgb` 移入 `window.NPCConfig` 工具函数并复用~~ |
+| ~~5~~ | ~~**角色 `name` 字段不唯一**~~ | ~~char1 和 char3 均为 `"她"`，导出文本中会出现歧义的 `【她】...【她】`~~ **✓ 已修复：char1 / char2 / char3 改为唯一显示名 `"小一"` / `"小二"` / `"三三"`（曾用名 `"她·蓝"` / `"他·锈橙"` / `"她·暗紫"`）。** | ~~为角色增加可读唯一标识或在导出时使用 `id`~~ |
 | 6 | **`mockResponse()` 的条件判断脆弱** | 通过检查 `schema?.properties?.reply` 存在性来区分两种模拟响应，若 schema 结构变化将静默返回错误格式 | 增加明确的 `type` 或 `mode` 参数来区分调用场景 |
 
 ### P2 — 工程化缺失
@@ -423,6 +483,7 @@ return { ...character, currentCandor: newCandor, currentColor: newColor };
 | 自动续档 | sessionStorage 有 `npc_pending_loop` | 显示「记忆已延续·第N周目」1.5s → intro |
 | 新周目 | 无 sessionStorage，点击「开启新的旅程」 | currentLoopIndex=1 → intro |
 | 手动导入 | 无 sessionStorage，点击「继续上一段记忆」 | 粘贴 JSON → 注入 → 预览3s → intro |
+| **测试跳转** | 无 sessionStorage，页眉已勾选测试模式，点击「测试：跳转到指定周目」 | 选择 1–10 → 合成 mock `characters` + `notebook[1..N-1]` → `injectArchive` → 预览 1.5s → intro；上次周目记入 `localStorage.npc_test_start_loop` |
 
 ### 8.3 mutableSubconscious 生命周期
 
@@ -430,10 +491,35 @@ return { ...character, currentCandor: newCandor, currentColor: newColor };
 
 **导入阶段**：`loop.js` 的 `injectArchive` 先调用 `DialogueState.resetForNewLoop()` 清空状态，再调用 `NPCConfig.injectSubconscious` 将数据写入 `baseCharacters`（幂等：以 `_originalSystemPrompt` 为基准覆盖写入 `systemPrompt`），最后通过 `DialogueState.patchCharacter` 将 `baseCharacters` 的规范值同步到活跃的 `state.characters`。
 
-**结算阶段**：`ending.js` 在 stage 3 全部完成后，非阻塞地对三个 NPC 并行调用「高维命运观测者」结算 Prompt（`runAllSubconsciousSettlements`）。结果写入 `endingState.dialogueSnapshot.characters[].mutableSubconscious` 的三个叙事字段（`subconsciousImpression`、`thresholdAdjustment`、`nextLoopPromptPatch`）。`dejaVuLevel` 始终由 `buildArchiveObject` 从 `currentCandor` 计算覆盖，不使用 AI 返回值。
+**结算阶段**：`ending.js` 在 stage 3 全部完成后，非阻塞地对三个 NPC 并行调用「高维命运观测者」结算 Prompt（`runAllSubconsciousSettlements`）。**该结算只看本轮对话历史 + `currentCandor`，不读取 stage1/2/3 的行为与台词**——刻意切断终局事件对潜意识的污染（NPC 不应记得「自己最终救/没救玩家」或「被刀刺」之类的具体事件）。Prompt 强约束：补丁文本主语必须是 NPC、宾语必须是「那个陌生人」(玩家)，必须从对话里抽取 1–3 个真实出现过的关键词（话题/物件/场景）作为印象锚点；**禁止**把 NPC 自身设定特征（背相机、背书包、店家、刚从图书馆出来等）误写成玩家的特征；**禁止**出现死/刀/血/危险/救等终局相关词。结果写入 `endingState.dialogueSnapshot.characters[].mutableSubconscious` 的三个叙事字段（`subconsciousImpression`、`thresholdAdjustment`、`nextLoopPromptPatch`）。`dejaVuLevel` 始终由 `buildArchiveObject` 从 `currentCandor` 计算覆盖，不使用 AI 返回值。
 
-**导出阶段**：`buildArchiveObject` 从 `endingState.dialogueSnapshot` 读取已结算的 `mutableSubconscious`，写入 `loop_archive` JSON。下一周目导入时注入，实现情绪残留的跨轮传递。
+**导出阶段**：`buildArchiveObject` 从 `endingState.dialogueSnapshot` 读取已结算的 `mutableSubconscious`，写入 `loop_archive` JSON。下一周目导入时注入，实现情绪残留的跨轮传递。同时读取 `LoopState.getNotebookEntries()` 写入 `archive.notebook[]`（F-004）。
+
+### 8.4 笔记本数据流（F-004）
+
+`runEnding()` 触发时立刻通过 `appendCurrentLoopFallbackEntry()` 在 `loopState.notebook` 末尾 append 一条占位 entry（`body=""`、`source="fallback"`），保证任何瞬时点击「保存轮回记忆」/「直接开启下一轮次」都能携带当前周目条目。
+
+`runEndingPostStage` 的第三并行任务 `notebookTask` 复用 `DialogueState.callGemini({ responseSchema: NOTEBOOK_SCHEMA, ... })`：
+- 仅传当前周目 `NotebookConfig.getTonePresetFor(loopIndex)` + 本轮上下文摘要 + 上一页末尾 60 字，AI **不见** 完整 `LOOP_NOTEBOOK_TONE` 1–10 表。
+- 7-8 周目 prompt 显式要求 `<del>` + 截断句、严禁错别字（所有"模糊感"通过 `<del>` 与截断句呈现）。
+- 第 9 周目 prompt 要求「真相 + 疲惫 + 想结束」主题，**不再嵌入任何固定金句**（旧金句「既然有时间，为什么不现在去过呢？」已废除）；第 10 周目要求「反杀凶手 + 留下花 + 合上笔记本离开」释然告别基调。
+- 成功 → `LoopState.replaceLastNotebookEntry(真实 entry)` 覆盖 fallback；失败 / 长度异常 / 含元信息 → 保留 fallback。
+
+UI 端（`index.html` 内联）使用受控 HTML 渲染 `renderNotebookBodyHtml(body)`：先全转义 `& < >`，再仅放回 `<del>` / `</del>` / `<br>` 三个白名单标签，其他 HTML 一律字面化，杜绝 XSS。第 1 周目隐藏入口；第 2+ 周目右下 64×64 图标按钮 + 居中弹层（70vw × 80vh，z-index 700/710，低于终局 overlay）+ 翻页（按钮 / ←/→ / Esc / 点遮罩关闭）。`dialogue.js` 仅扩展 `buildMockFromSchema` 内一行 `responseSchema.title === "notebook"` 识别，返回含 `<del>` 样例的稳定 mock 文本，**未拆分、未重构 provider、未改 `callGemini`**。
+
+### 8.5 周目剧本（quick reply 周目化 + 测试模式默认对白）
+
+`loop-script.js` 作为独立配置层持有 1–10 周目的剧本数据：
+- `QUICK_REPLIES_BY_LOOP[loopIndex][charId]`：当前周目该角色的两条 quick reply 文本 + 对应的 mock 回复（`reply` / `touched` / `closing_signal`）。
+- `TEST_NOTEBOOK_BODY_BY_LOOP[loopIndex]`：跳周目测试时直接显示的占位日记正文（不走 AI 生成）。
+- 第 7/8 周目 quick reply 通用为「我恨你们 / 可以陪陪我吗？」；选择「可以陪陪我吗？」时 mock 回复触发该角色的回忆主题（蓝→看书 / 橙→吵架 / 紫→装扮）。
+- 第 9/10 周目 quick reply 为「告别 + 谢谢/恨」基调，配合第 10 周目反杀凶手 + 留下花的终局叙述。
+
+**消费路径**：
+- `dialogue.js` `syncQuickReplyUi` 优先按当前周目从 `LoopScript.getQuickReplies(charId, loopIndex)` 取文本，回退到 `characters.js` 静态 `quickReplies`。
+- `dialogue.js` `dispatchPlayerTurn` 在 **测试模式 + 命中本周目某条 quick reply 文本** 时短路 `callGemini`，直接用 mock 走原 `appendMessage("model", ...)`、candor、closing 校验路径；**不修改 callGemini 路由、provider 实现、错误处理链路**。
+- `loop.js` `buildTestNotebookBody` 优先读 `LoopScript.getTestNotebookBody(loopIndex)`，回退到 `NOTEBOOK_MOCK_BODY_DEL` / 通用占位。
 
 ---
 
-*文档终。此文档应在每次架构级别变更后同步更新。最后同步：2026-03-11（API 配置持久化、error 角色过滤）*
+*文档终。此文档应在每次架构级别变更后同步更新。最后同步：2026-05-19（周目剧本：(1) 新增 `loop-script.js` 配置层，承载 1–10 周目 quick reply 文本 + 测试模式默认对白 + 测试占位日记；(2) `dialogue.js` quick reply 周目化 + 测试模式短路 mock；(3) Intro 文案补齐第 4/5/6 周目；(4) notebook-config 第 4 周目信息边界改为「记起为买花被杀，凶手在路人之中」、第 9 周目改为「真相+疲惫+有人通过留花离开+想结束」；(5) ending.js 第 9 周目废除「既然有时间」金句、第 10 周目终局叙述改为主角反杀凶手并留下一束花。）*

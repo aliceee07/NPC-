@@ -3,16 +3,89 @@
 
   const endingState = {
     triggered: false,
+    stage1Results: {},
     stage2Results: {},
     stage3Results: {},
     dialogueSnapshot: null,
-    loopSummary: null,       // 结算 Prompt 返回的本轮一句话总结
+    loopSummary: null,       // 轮回记忆整理（原 summary；写入 archive.summary 与日记 prompt，不在尾声页展示）
   };
+
+  let endingAbortController = null;
+  let endingPostStagePromise = null;
+
+  const NOTEBOOK_WAIT_TIMEOUT_MS = 90000;
+
+  function isAbortError(err) {
+    return !!err && (err.name === "AbortError" || err.code === 20);
+  }
+
+  function createEndingController() {
+    if (endingAbortController) {
+      endingAbortController.abort();
+    }
+    endingAbortController = new AbortController();
+    return endingAbortController;
+  }
+
+  function abortEndingRequests(reason) {
+    if (!endingAbortController) return;
+    console.log(`[abort] ending requests cancelled by ${reason || "unknown"}`);
+    endingAbortController.abort();
+    endingAbortController = null;
+  }
+
+  function isNpcTestMode() {
+    try {
+      return localStorage.getItem("npc_test_mode") === "1";
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function getEndingApiProvider() {
+    const el = document.getElementById("api-provider-select");
+    return (el ? el.value : "") || window.AI_PROVIDER || "gemini";
+  }
+
+  function hasRealApiKeyForEnding() {
+    const el = document.getElementById("api-key-input");
+    const inputVal = el ? el.value.trim() : "";
+    if (inputVal) return true;
+    return getEndingApiProvider() === "siliconflow"
+      ? !!(window.SILICONFLOW_PRESET_KEY || "")
+      : !!(window.GEMINI_PRESET_KEY || "");
+  }
+
+  /** 真实 API 路线：需等日记生成完成再允许进入下一轮，避免 abort 后只剩 fallback。 */
+  function shouldGateNextLoopOnNotebook() {
+    return !isNpcTestMode() && hasRealApiKeyForEnding();
+  }
+
+  function isCurrentLoopNotebookReady() {
+    if (!window.LoopState || typeof window.LoopState.getNotebookEntries !== "function") {
+      return true;
+    }
+    let entries = [];
+    try {
+      entries = window.LoopState.getNotebookEntries();
+    } catch (_) {
+      return true;
+    }
+    const last = entries[entries.length - 1];
+    if (!last) return true;
+    const loopIndex = (typeof window.LoopState.getLoopIndex === "function")
+      ? window.LoopState.getLoopIndex()
+      : 1;
+    if (last.loopIndex !== loopIndex) return true;
+    if (last.source === "ai" || last.source === "mock") return true;
+    if (typeof last.body === "string" && last.body.trim().length > 0) return true;
+    return false;
+  }
 
   /* ═══════════════════════════════════════════════════════════
      QUEUE  —  4 entries, one per screen:
-       0: phase 1 (all static)
-       1: phase 2 (slots fill reactively as API returns)
+       0: phase 1 (slots fill reactively as API returns)
+       1: phase 2 (same)
        2: phase 3 (same)
        3: epilogue
      All entries are pushed immediately so the user can page
@@ -21,30 +94,8 @@
 
   const queue  = [];
   let   cursor = -1;
-  let   autoTimer = null;
-
-  const AUTO_MS = 60_000;
-  const TICK_MS = 100;
 
   function enqueue(data) { queue.push({ data }); }
-
-  /* ─── Auto-advance timer (per screen) ─────────────────────── */
-
-  function startAutoTimer() {
-    clearAutoTimer();
-    let elapsed = 0;
-    setProgress(1);
-    autoTimer = setInterval(() => {
-      elapsed += TICK_MS;
-      setProgress(1 - elapsed / AUTO_MS);
-      if (elapsed >= AUTO_MS) advance();
-    }, TICK_MS);
-  }
-
-  function clearAutoTimer() {
-    if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
-    setProgress(0);
-  }
 
   function setProgress(f) {
     const el = document.getElementById("eo-progress-fill");
@@ -55,16 +106,22 @@
 
   function advance() {
     const current = queue[cursor];
-    if (current && current.data.slots) {
-      const allReady = current.data.slots.every(s => s.ready);
-      if (!allReady) return;
+    if (current && current.data.type === "phase" && current.data.showNpcSlots === false) {
+      /* 纯叙述阶段，无需等待 NPC */
+    } else if (current && current.data.slots && current.data.slots.length > 0) {
+      const slots = current.data.slots;
+      const readyCount = slots.filter((s) => s.ready).length;
+      const allReady = slots.every((s) => s.ready);
+      if (!allReady) {
+        setHint(`正在等待回复…（已完成 ${readyCount}/3）`);
+        setProgress(readyCount / 3);
+        return;
+      }
     }
-    clearAutoTimer();
     const next = cursor + 1;
     if (next >= queue.length) return;
     cursor = next;
     renderEntry(queue[next].data);
-    if (queue[next].data.type !== "epilogue") startAutoTimer();
   }
 
   /* ═══════════════════════════════════════════════════════════
@@ -87,7 +144,10 @@
     slot.ready  = true;
     slot.action = action;
     slot.line   = line;
-    if (!slot.domEl) return;
+    if (!slot.domEl) {
+      refreshEndingFooter();
+      return;
+    }
 
     const actionEl = slot.domEl.querySelector(".eo-slot-action");
     const lineEl   = slot.domEl.querySelector(".eo-slot-line");
@@ -106,6 +166,7 @@
       }, 220);
     }
     slot.domEl.classList.replace("eo-slot-loading", "eo-slot-filled");
+    refreshEndingFooter();
   }
 
   /* ═══════════════════════════════════════════════════════════
@@ -142,6 +203,33 @@
     if (el) el.textContent = text;
   }
 
+  function refreshEndingFooter() {
+    const cur = queue[cursor];
+    if (!cur || cur.data.type !== "phase") {
+      return;
+    }
+    if (cur.data.showNpcSlots === false) {
+      setHint("点击任意位置继续 →");
+      setProgress(1);
+      return;
+    }
+    const slots = cur.data.slots;
+    if (!slots || slots.length === 0) {
+      setHint("点击任意位置继续 →");
+      setProgress(1);
+      return;
+    }
+    const readyCount = slots.filter((s) => s.ready).length;
+    const allReady = slots.every((s) => s.ready);
+    if (!allReady) {
+      setHint(`正在等待回复…（已完成 ${readyCount}/3）`);
+      setProgress(readyCount / 3);
+    } else {
+      setHint("点击任意位置继续 →");
+      setProgress(1);
+    }
+  }
+
   /* Swap content with fade */
   function renderEntry(data) {
     const slotEl = document.getElementById("eo-slot");
@@ -157,9 +245,14 @@
       slotEl.classList.remove("eo-out");
       slotEl.classList.add("eo-in");
       setTimeout(() => slotEl.classList.remove("eo-in"), 500);
+      if (data.type === "phase") {
+        refreshEndingFooter();
+      } else {
+        setHint("");
+        setProgress(0);
+      }
     }, 220);
 
-    setHint(data.type === "epilogue" ? "" : "点击任意位置继续");
   }
 
   /* ─── Phase screen ─────────────────────────────────────────── */
@@ -176,15 +269,19 @@
       `<div class="eo-phase-desc">${data.desc}</div>`;
     wrap.appendChild(hdr);
 
-    // Character slots
-    const slotsWrap = document.createElement("div");
-    slotsWrap.className = "eo-char-slots";
-    data.slots.forEach((slot) => {
-      const el = buildSlotEl(slot);
-      slot.domEl = el;
-      slotsWrap.appendChild(el);
-    });
-    wrap.appendChild(slotsWrap);
+    if (data.showNpcSlots !== false) {
+      const slots = data.slots || [];
+      if (slots.length > 0) {
+        const slotsWrap = document.createElement("div");
+        slotsWrap.className = "eo-char-slots";
+        slots.forEach((slot) => {
+          const el = buildSlotEl(slot);
+          slot.domEl = el;
+          slotsWrap.appendChild(el);
+        });
+        wrap.appendChild(slotsWrap);
+      }
+    }
 
     return wrap;
   }
@@ -232,19 +329,14 @@
     title.textContent = data.label;
     wrap.appendChild(title);
 
-    // Summary block (响应式，结算 Prompt 返回后更新)
-    const summaryBlock = document.createElement("div");
-    summaryBlock.className = "eo-summary-block";
-    summaryBlock.id = "eo-summary-block";
-    if (endingState.loopSummary) {
-      summaryBlock.textContent = endingState.loopSummary;
-    } else {
-      summaryBlock.classList.add("eo-loading-shimmer");
-      summaryBlock.textContent = "";
+    const onFinalLoop = isOnFinalLoop();
+    if (onFinalLoop) {
+      const leaveHint = document.createElement("p");
+      leaveHint.className = "eo-final-leave-hint";
+      leaveHint.textContent = "似乎留下了什么。";
+      wrap.appendChild(leaveHint);
     }
-    wrap.appendChild(summaryBlock);
 
-    // Buttons
     const actions = document.createElement("div");
     actions.className = "eo-actions";
 
@@ -260,37 +352,108 @@
     exportJsonBtn.textContent = "保存轮回记忆";
     exportJsonBtn.addEventListener("click", doExportJson);
 
-    // ③ 直接开启下一轮次
-    const nextLoopBtn = document.createElement("button");
-    nextLoopBtn.className = "eo-btn";
-    nextLoopBtn.textContent = "直接开启下一轮次";
-    nextLoopBtn.addEventListener("click", doStartNextLoop);
+    const gateNotebook = shouldGateNextLoopOnNotebook();
+    let notebookStatus = null;
 
-    // ④ 重新开始（清白刷新）
-    const restartBtn = document.createElement("button");
-    restartBtn.className = "eo-btn eo-btn-secondary";
-    restartBtn.textContent = "重新开始";
-    restartBtn.addEventListener("click", () => location.reload());
+    if (onFinalLoop) {
+      const openNotebookBtn = document.createElement("button");
+      openNotebookBtn.className = "eo-btn";
+      openNotebookBtn.id = "eo-open-notebook-btn";
+      openNotebookBtn.textContent = "打开";
+      openNotebookBtn.addEventListener("click", () => {
+        if (gateNotebook && !isCurrentLoopNotebookReady()) {
+          if (notebookStatus) {
+            notebookStatus.textContent = "日记仍在记录中，请稍候片刻再打开。";
+          }
+          return;
+        }
+        openNotebookFromEnding();
+      });
 
-    actions.appendChild(exportTxtBtn);
-    actions.appendChild(exportJsonBtn);
-    actions.appendChild(nextLoopBtn);
-    actions.appendChild(restartBtn);
+      const playAgainBtn = document.createElement("button");
+      playAgainBtn.className = "eo-btn eo-btn-secondary";
+      playAgainBtn.textContent = "再玩一次";
+      playAgainBtn.addEventListener("click", doPlayAgain);
+
+      if (gateNotebook) {
+        notebookStatus = document.createElement("p");
+        notebookStatus.className = "eo-notebook-status";
+        notebookStatus.id = "eo-notebook-status";
+        notebookStatus.textContent = "日记记录中……记录完成前请稍候。";
+        actions.appendChild(notebookStatus);
+        openNotebookBtn.disabled = true;
+        void waitForNotebookThenEnable(openNotebookBtn, notebookStatus, {
+          ready: "笔记本已记下全部轮回，点击「打开」翻阅。",
+          partial: "日记仍有些模糊；你仍可打开笔记本查看已有记录。",
+        });
+      }
+
+      actions.appendChild(exportTxtBtn);
+      actions.appendChild(exportJsonBtn);
+      actions.appendChild(openNotebookBtn);
+      actions.appendChild(playAgainBtn);
+    } else {
+      const nextLoopBtn = document.createElement("button");
+      nextLoopBtn.className = "eo-btn";
+      nextLoopBtn.id = "eo-next-loop-btn";
+      nextLoopBtn.textContent = "直接开启下一轮次";
+      nextLoopBtn.addEventListener("click", doStartNextLoop);
+
+      if (gateNotebook) {
+        notebookStatus = document.createElement("p");
+        notebookStatus.className = "eo-notebook-status";
+        notebookStatus.id = "eo-notebook-status";
+        notebookStatus.textContent = "日记记录中……记录完成前请勿开启下一轮。";
+        actions.appendChild(notebookStatus);
+        nextLoopBtn.disabled = true;
+        void waitForNotebookThenEnable(nextLoopBtn, notebookStatus, {
+          ready: "本轮日记已记下，可以开启下一轮。",
+          partial: "日记仍有些模糊；你仍可进入下一轮，但笔记本里可能只剩残缺记忆。",
+        });
+      }
+
+      const restartBtn = document.createElement("button");
+      restartBtn.className = "eo-btn eo-btn-secondary";
+      restartBtn.textContent = "重新开始";
+      restartBtn.addEventListener("click", () => {
+        abortEndingRequests("restart");
+        location.reload();
+      });
+
+      actions.appendChild(exportTxtBtn);
+      actions.appendChild(exportJsonBtn);
+      actions.appendChild(nextLoopBtn);
+      actions.appendChild(restartBtn);
+    }
     wrap.appendChild(actions);
     return wrap;
   }
 
-  /* ─── Summary DOM 响应式更新 ────────────────────────────────── */
+  async function waitForNotebookThenEnable(btn, statusEl, messages) {
+    if (!btn || !statusEl) return;
+    const msgs = messages || {};
+    const deadline = Date.now() + NOTEBOOK_WAIT_TIMEOUT_MS;
+    try {
+      if (endingPostStagePromise) {
+        await Promise.race([
+          endingPostStagePromise,
+          sleep(NOTEBOOK_WAIT_TIMEOUT_MS),
+        ]);
+      }
+      while (!isCurrentLoopNotebookReady() && Date.now() < deadline) {
+        await sleep(300);
+      }
+    } catch (_) { /* ignore */ }
 
-  function updateSummaryDom(text) {
-    const el = document.getElementById("eo-summary-block");
-    if (!el) return;
-    el.style.opacity = "0";
-    setTimeout(() => {
-      el.classList.remove("eo-loading-shimmer");
-      el.textContent = text || "";
-      el.style.opacity = "1";
-    }, 200);
+    const ready = isCurrentLoopNotebookReady();
+    if (ready) {
+      statusEl.textContent = msgs.ready || "本轮日记已记下，可以开启下一轮。";
+    } else {
+      statusEl.textContent = msgs.partial ||
+        "日记仍有些模糊；你仍可继续，但笔记本里可能只剩残缺记忆。";
+    }
+    btn.disabled = false;
+    btn.title = "";
   }
 
   /* ═══════════════════════════════════════════════════════════
@@ -308,7 +471,7 @@
     lines.push("流浪者与三个路人 — 本轮对话记录");
     lines.push(`导出时间：${now}`);
     if (endingState.loopSummary) {
-      lines.push(`本轮总结：${endingState.loopSummary}`);
+      lines.push(`本轮记忆整理：${endingState.loopSummary}`);
     }
     lines.push("=".repeat(48));
     lines.push("");
@@ -336,9 +499,8 @@
       lines.push("");
       lines.push("[ 终局 ]");
 
-      const p2 = endingState.stage2Results[c.id] || {};
-      lines.push(`阶段 2  ${p2.action || "（未知）"}`);
-      if (p2.line) lines.push(`        「${p2.line}」`);
+      lines.push("阶段 1  （叙述阶段，无路人反馈）");
+      lines.push("阶段 2  （叙述阶段，无路人反馈）");
 
       const p3 = endingState.stage3Results[c.id] || {};
       lines.push(`阶段 3  ${p3.action || "（未知）"}`);
@@ -385,12 +547,72 @@
       });
     }
 
+    // 读取 LoopState 中已 append 的 notebook entries（含当前轮的占位/真实 entry）
+    let notebook = [];
+    if (window.LoopState && typeof window.LoopState.getNotebookEntries === "function") {
+      try {
+        notebook = window.LoopState.getNotebookEntries();
+      } catch (_) {
+        notebook = [];
+      }
+    }
+
     return {
       loop_index: loopIndex,
       ran_at:     new Date().toISOString(),
       characters,
       summary:    endingState.loopSummary || "",
+      notebook,
     };
+  }
+
+  /* ─── F-004a fallback notebook entry ───────────────────────── */
+  /* F-004a 阶段每轮终局都 append 一条 fallback entry（body=""）；
+     F-004c 阶段会被 AI 真生成路径替换/覆盖。                       */
+  function buildFallbackNotebookEntry(spec) {
+    const opt = spec || {};
+    const loopIndex = Number(opt.loopIndex);
+    const tone = opt.tonePreset || {};
+    return {
+      loopIndex: Number.isFinite(loopIndex) ? loopIndex : 1,
+      headerLabel: typeof opt.headerLabel === "string" && opt.headerLabel
+        ? opt.headerLabel
+        : (tone.headerLabel || ""),
+      body: "",
+      tonePreset: {
+        emotion: tone.emotion || "",
+        memoryLevel: tone.memoryLevel || "",
+        infoSnippet: tone.infoSnippet || "",
+        headerLabel: tone.headerLabel || "",
+      },
+      generatedAt: new Date().toISOString(),
+      source: "fallback",
+      error: typeof opt.error === "string" ? opt.error : "not_yet_generated",
+    };
+  }
+
+  /* 在终局触发后立即把当前周目的 fallback entry append 到 LoopState；
+     F-004c 启用 AI 时改为「先 fallback、AI 成功后用真实 entry 重写最后一条」或
+     「等待 AI 完成再 append」二选一。F-004a 先采用 fallback 永远存在的保守策略。 */
+  function appendCurrentLoopFallbackEntry() {
+    if (!window.LoopState || typeof window.LoopState.appendNotebookEntry !== "function") return;
+    if (!window.NotebookConfig || typeof window.NotebookConfig.getTonePresetFor !== "function") return;
+    const loopIndex = (typeof window.LoopState.getLoopIndex === "function")
+      ? window.LoopState.getLoopIndex()
+      : 1;
+    // 已有同 loopIndex 的 entry 则不重复 append（防御性）
+    const existing = (typeof window.LoopState.getNotebookEntries === "function")
+      ? window.LoopState.getNotebookEntries()
+      : [];
+    if (existing.some(function (e) { return e && e.loopIndex === loopIndex; })) return;
+    const tone = window.NotebookConfig.getTonePresetFor(loopIndex) || {};
+    const entry = buildFallbackNotebookEntry({
+      loopIndex,
+      headerLabel: tone.headerLabel,
+      tonePreset: tone,
+      error: "not_yet_generated",
+    });
+    window.LoopState.appendNotebookEntry(entry);
   }
 
   /* ② 保存轮回记忆（JSON，供下次手动导入） */
@@ -414,10 +636,23 @@
 
   /* ③ 直接开启下一轮次（sessionStorage + reload） */
   function doStartNextLoop() {
-    const currentIndex = (window.LoopState && window.LoopState.getLoopIndex)
-      ? window.LoopState.getLoopIndex()
-      : 1;
-    const archive = buildArchiveObject(currentIndex + 1);
+    const currentIndex = getCurrentLoopIndex();
+    if (currentIndex >= getFinalLoopIndex()) {
+      return;
+    }
+    if (shouldGateNextLoopOnNotebook() && !isCurrentLoopNotebookReady()) {
+      const statusEl = document.getElementById("eo-notebook-status");
+      if (statusEl) {
+        statusEl.textContent = "日记仍在记录中，请稍候片刻再开启下一轮。";
+      }
+      return;
+    }
+    abortEndingRequests("next-loop");
+    const nextLoop = currentIndex + 1;
+    if (nextLoop > getFinalLoopIndex()) {
+      return;
+    }
+    const archive = buildArchiveObject(nextLoop);
 
     try {
       sessionStorage.setItem("npc_pending_loop", JSON.stringify(archive));
@@ -459,8 +694,10 @@
     required: ["action", "line", "reason"],
   };
 
-  const SUMMARY_SCHEMA = {
+  /* title 供测试模式 mock；字段名 summary 与 archive.summary 兼容 */
+  const LOOP_MEMORY_SCHEMA = {
     type: "object",
+    title: "loop_memory",
     properties: {
       summary: { type: "string" },
     },
@@ -478,38 +715,279 @@
     required: ["deja_vu_level", "subconscious_impression", "threshold_adjustment", "next_loop_prompt_patch"],
   };
 
+  /* F-004c：notebook schema —— title 字段供 dialogue.js mockResponse 识别。
+     真实 API 也接受此 schema；body 是主角第一人称碎碎念正文。            */
+  const NOTEBOOK_SCHEMA = {
+    type: "object",
+    title: "notebook",
+    properties: {
+      body: { type: "string" },
+    },
+    required: ["body"],
+  };
+
+  const DEFAULT_EPILOGUE_LABEL = "她闭上眼，然后又睁开";
+
+  /* 按周目：阶段一/二/三叙述（仅玩家可见）；尾声轮回句；阶段三 NPC 仅知「有人被捅」 */
+  const ENDING_PHASE_BY_LOOP = {
+    1: {
+      phase1: "你继续往前走。身侧忽然炸开一声骂——街角有碰撞，有口角，空气里有什么东西，轻轻点燃了。",
+      phase2: "有个人朝你走来。面色不善，步子不快，却一步都不肯停。街上的路人，都看见了。",
+      phase3: "他掏出刀，向你身上捅来。一刀，又一刀……",
+      epilogue: DEFAULT_EPILOGUE_LABEL,
+    },
+    2: {
+      phase1: "你还是往前走。身侧忽然有人吵起来——肩膀撞了肩，骂声擦过耳根，空气一点点绷紧。",
+      phase2: "你想错开步子走开。身后的脚步声却跟了上来，不快，却一步也不肯放。",
+      phase3: "还是被追上了。混乱里你抬眼，街角居然有家小花店——橱窗里的花在晕眩里格外清楚。你心里忽然觉得，那或许才是要紧的。",
+      epilogue: DEFAULT_EPILOGUE_LABEL,
+    },
+    3: {
+      phase1: "又到了这个时刻。你看见他从不远处走来，步子还是那样——慢，却一步都不肯停。",
+      phase2: "你比别人更早惊醒似的，拔腿就跑；可街道太窄，退路一眼就看得见底。",
+      phase3: "他还是追上来了。你栽在路灯下，脑子里忽然只剩一个念头：要是能买一束花就好了。",
+      epilogue: "你想买一束花。指尖还没碰到店门，视野就先暗了下去——再亮起时，又是一条熟悉的街。",
+    },
+    4: {
+      phase1: "又到了这个时刻。天色照旧，人潮照旧，而他照旧朝你走来。",
+      phase2: "不知为何，你双膝先软了下去，像被什么按住——嘴里念出的，连你自己都听不清是祈祷还是恳求。",
+      phase3: "刀子还是落了下来。你连那句祷告都没来得及说完。",
+      epilogue: DEFAULT_EPILOGUE_LABEL,
+    },
+    5: {
+      phase1: "又到了这个时刻——这一回你没有退。你盯住他的肩、他的手，身子一侧，准备扑上去。",
+      phase2: "他比你快半步。你挥空的那一瞬重心被带歪，整个人朝坚硬的路面栽去。",
+      phase3: "还是失败了。刀尖贴上来时，你只觉冷——和每一次一样冷。",
+      epilogue: DEFAULT_EPILOGUE_LABEL,
+    },
+    6: {
+      phase1: "又到了这个时刻。这一回你看得更清楚：他抬手前肩会先沉一下，脚步总比预想慢半拍才落地。",
+      phase2: "你知道他要来了——可身体还是迟了一拍，像隔着一层水，怎样也迈不出那一步。",
+      phase3: "你还是被追上了。所有预兆都在眼前排好队，你却一步也踏不出去。",
+      epilogue: DEFAULT_EPILOGUE_LABEL,
+    },
+    7: {
+      phase1: "又到了这个时刻。你甚至数得清他第几步会贴近——差距明明白白，像一道早就画好的线。",
+      phase2: "你想动，肌肉却不听使唤，像被钉在原地，只能眼睁眼看着那条线一寸寸压近。",
+      phase3: "你什么也做不了。刀落下来的时候，你只剩下一种清澈的无力。",
+      epilogue: DEFAULT_EPILOGUE_LABEL,
+    },
+    8: {
+      phase1: "又到了这个时刻。脑子像被什么东西啃过，昨天、上周、上一辈子叠在同一条街上，分不清哪一层才是今天。",
+      phase2: "你明明记得结局，却还是忍不住笑出声，骂一句，又重复昨天做过的动作——像一台坏掉的录音机。",
+      phase3: "刀落下来的时候，你分不清疼和笑哪个更响；这一回，声音特别大，大到连自己的心跳都听不见。",
+      epilogue: DEFAULT_EPILOGUE_LABEL,
+    },
+    9: {
+      phase1: "又到了这个时刻。街景叠在一起，像几张透印的底片，连路灯都印着上一轮的影子。",
+      phase2: "你听见自己在说话，却像隔着玻璃——字句碎掉，拼不回完整的句子，只剩呼吸贴着喉咙。",
+      phase3: "刀光闪了一下。你竟想笑，又想哭，最后什么也说不出，只觉这一遍终于轻了一点。",
+      epilogue: DEFAULT_EPILOGUE_LABEL,
+    },
+    10: {
+      phase1: "又到了这个时刻——这一回，你已经知道接下来会发生什么。你抬手，握紧了袖中那把每一次都被夺走的刀。",
+      phase2: "他还是朝你走来，步子还是那样不肯停。可这一次，你迎了上去，没有躲，也没有再求。",
+      phase3: "刀光闪了一下。这一回，倒下的是他。你弯腰，把手里那束刚买的花，轻轻放在他身边——这一次，留下的人不是他，是花。",
+      epilogue: "她合上笔记本，转身离开了这条街。",
+    },
+  };
+
+  const STAGE3_NPC_EVENT_BRIEF =
+    "你方才与街头一位陌生人（玩家）交谈过。此刻你得知：刚才还在附近、与你们说过话或刚离开的那个人，被人用刀捅了——局面万分危急。" +
+    "你不知道在此之前街上还发生了什么（口角、追逐、祈祷、反击等细节只是主角的经历，不是你目击到的信息）。" +
+    "请仅根据你与这位陌生人的对话历史，判断你在得知有人被捅的这一刻会做什么、会说什么。";
+
+  function getFinalLoopIndex() {
+    try {
+      if (window.EndingParticipation && typeof window.EndingParticipation.getFinalLoopIndex === "function") {
+        return window.EndingParticipation.getFinalLoopIndex();
+      }
+      if (window.NotebookConfig && typeof window.NotebookConfig.getFinalLoopIndex === "function") {
+        const n = Number(window.NotebookConfig.getFinalLoopIndex());
+        if (Number.isFinite(n) && n >= 1) return Math.floor(n);
+      }
+    } catch (_) { /* ignore */ }
+    return 10;
+  }
+
+  function getEndingParticipationMap(characters) {
+    const loopIndex = getCurrentLoopIndex();
+    try {
+      if (window.EndingParticipation && typeof window.EndingParticipation.getMapForCharacters === "function") {
+        return window.EndingParticipation.getMapForCharacters(loopIndex, characters);
+      }
+    } catch (_) { /* ignore */ }
+    const map = Object.create(null);
+    (characters || []).forEach((c) => {
+      if (!c || !c.id) return;
+      map[c.id] = {
+        callStage3Judgment: true,
+        showStage3Slot: true,
+        callSubconsciousSettlement: true,
+      };
+    });
+    return map;
+  }
+
+  function resolveCharParticipation(participationMap, charId) {
+    const p = participationMap && participationMap[charId];
+    if (p) return p;
+    return {
+      callStage3Judgment: true,
+      showStage3Slot: true,
+      callSubconsciousSettlement: true,
+    };
+  }
+
+  function getCurrentLoopIndex() {
+    try {
+      if (window.LoopState && typeof window.LoopState.getLoopIndex === "function") {
+        const v = window.LoopState.getLoopIndex();
+        if (Number.isFinite(v) && v >= 1) return Math.floor(v);
+      }
+    } catch (_) { /* ignore */ }
+    return 1;
+  }
+
+  function isOnFinalLoop() {
+    return getCurrentLoopIndex() >= getFinalLoopIndex();
+  }
+
+  function openNotebookFromEnding() {
+    try {
+      if (window.NPCNotebookUi && typeof window.NPCNotebookUi.open === "function") {
+        window.NPCNotebookUi.open({ page: "last" });
+        return;
+      }
+    } catch (_) { /* ignore */ }
+    console.warn("[ending.js] NPCNotebookUi.open unavailable");
+  }
+
+  function doPlayAgain() {
+    abortEndingRequests("play-again");
+    try {
+      sessionStorage.removeItem("npc_pending_loop");
+    } catch (_) { /* ignore */ }
+    try {
+      sessionStorage.setItem("npc_fresh_journey", "1");
+    } catch (err) {
+      console.error("[ending.js] sessionStorage write failed:", err);
+    }
+    location.reload();
+  }
+
+  function getEndingCopyForLoop(loopIndex) {
+    const idx = Math.max(1, Math.min(10, loopIndex));
+    return ENDING_PHASE_BY_LOOP[idx] || ENDING_PHASE_BY_LOOP[1];
+  }
+
+  function getEpilogueLabel() {
+    const copy = getEndingCopyForLoop(getCurrentLoopIndex());
+    return copy.epilogue || DEFAULT_EPILOGUE_LABEL;
+  }
+
   /* ═══════════════════════════════════════════════════════════
-     SUMMARY  —  结算 Prompt，stage 3 完成后非阻塞触发
+     LOOP MEMORY  —  轮回记忆整理（原 summary），供尾声展示与日记输入
   ═══════════════════════════════════════════════════════════ */
 
-  async function runSummary(characters, histories, p3Results, callGemini) {
+  function truncateChineseText(text, maxLen, minCutoff) {
+    if (!text || text.length <= maxLen) return text;
+    const slice = text.slice(0, maxLen);
+    const lastIdx = Math.max(
+      slice.lastIndexOf("。"),
+      slice.lastIndexOf("！"),
+      slice.lastIndexOf("？"),
+      slice.lastIndexOf("……"),
+      slice.lastIndexOf("\n"),
+    );
+    const floor = typeof minCutoff === "number" ? minCutoff : 80;
+    return lastIdx > floor ? slice.slice(0, lastIdx + 1) : slice;
+  }
+
+  const META_EXPOSE_PATTERNS = [
+    /作为(?:一个)?(?:AI|人工智能|语言模型)/i,
+    /^好的[，,]?\s*以下/,
+    /^这里是/,
+    /\bschema\b/i,
+    /\bprompt\b/i,
+  ];
+
+  function hasMetaExposure(text) {
+    return META_EXPOSE_PATTERNS.some((re) => re.test(text));
+  }
+
+  function normalizeLoopMemory(value) {
+    if (typeof value !== "string") return null;
+    let text = value.trim();
+    if (text.length === 0) return null;
+    if (hasMetaExposure(text)) return null;
+    if (text.length > 900) {
+      text = truncateChineseText(text, 900, 120);
+    }
+    if (text.length < 8) return null;
+    return text;
+  }
+
+  async function runLoopMemory(characters, histories, p3Results, participationMap, callGemini, signal) {
     const charLines = characters.map((c) => {
+      const part = resolveCharParticipation(participationMap, c.id);
       const p3 = p3Results[c.id] || {};
-      return [
+      const candor = Number.isFinite(c.currentCandor) ? c.currentCandor : 0;
+      const maxCandor = Number.isFinite(c.maxCandor) ? c.maxCandor : 6;
+      const lines = [
         `【${c.name || c.id}】`,
+        `连结深度 currentCandor：${candor} / ${maxCandor}（0=几乎陌生，6=亲近）`,
+        "",
+        "【完整对话记录】",
         histText(histories, c.id) || "（无对话）",
-        `终局行为：${p3.action || "（未知）"}`,
-      ].join("\n");
+      ];
+      if (part.callStage3Judgment) {
+        lines.push(
+          "",
+          "【终局阶段行为】",
+          `行动：${p3.action || "（未知）"}`,
+          `台词：${p3.line || "（无）"}`,
+          `内心/理由摘要：${p3.reason || "（无）"}`,
+        );
+      }
+      return lines.join("\n");
     }).join("\n\n");
 
-    const sp = "你是叙事总结助手，根据本轮对话记录与终局行为，用一句话总结本轮故事的核心。不超过 40 字。";
+    const sp = [
+      "你是「轮回记忆整理者」。你的任务不是写剧情点评或煽情总结，而是整理「这一轮结束后，主角与下一轮都值得记住的事实」。",
+      "",
+      "请根据输入，写出结构清晰的记忆正文，必须覆盖：",
+      "1. **和谁说过话**：三位路人分别聊了多少、关系大致如何（冷淡/试探/冲突/亲近等，可结合连结深度）；",
+      "2. **值得记住的具体事**：对话里真实出现的话题、物件、场景、情绪转折、承诺或回避（禁止编造输入里没有的内容）；",
+      "3. **终局发生了什么**：每位路人在危机时刻最终做了什么、对主角意味着什么。",
+      "",
+      "写作要求：",
+      "- 用客观、可复述的叙述或短清单，具体、有名词，少用空泛形容词。",
+      "- 可分 2–4 个自然段，总长度建议 150–500 字；不必刻意压成一句话。",
+      "- 不要写成诗、口号或「本轮核心是……」式评论。",
+      "- 禁止提到 AI、玩家、prompt、schema、系统、代码。",
+    ].join("\n");
+
     const uc = [
-      "以下是本轮三位路人与玩家的对话历史及终局行为：",
+      "以下是本轮完整对话与终局行为记录：",
       "",
       charLines,
       "",
-      "请用一句话（不超过 40 字）概括本轮发生了什么，重点放在玩家与路人之间的连结程度与终局走向。",
+      "请输出 JSON：{ \"summary\": \"<本轮记忆整理正文>\" }。不要 Markdown，不要额外字段。",
     ].join("\n");
 
     const r = await callGemini({
-      label: "结算总结",
+      label: "轮回记忆整理",
       systemPrompt: sp,
       messages: [{ role: "user", content: uc }],
-      responseSchema: SUMMARY_SCHEMA,
+      responseSchema: LOOP_MEMORY_SCHEMA,
       isEndingPhase: true,
+      signal,
     });
 
-    return (r && r.summary) ? r.summary : "";
+    if (!r || typeof r.summary !== "string") return "";
+    const normalized = normalizeLoopMemory(r.summary);
+    return normalized || "";
   }
 
   /* ═══════════════════════════════════════════════════════════
@@ -517,39 +995,49 @@
      为每个 NPC 生成下一轮潜意识残留，写入 dialogueSnapshot。
   ═══════════════════════════════════════════════════════════ */
 
-  async function runSubconsciousSettlement(character, histories, p3Result, callGemini) {
+  async function runSubconsciousSettlement(character, histories, callGemini, signal) {
     const charName = character.name || character.id;
+    const candor = Number.isFinite(character.currentCandor) ? character.currentCandor : 0;
+    const maxCandor = Number.isFinite(character.maxCandor) ? character.maxCandor : 6;
 
     const sp = [
       "<Role>",
-      `你是一个「高维命运观测者」。当前，玩家与 NPC ${charName} 完成了一次时空循环。`,
-      "你的任务是：根据本轮的对话历史和终局表现，为该 NPC 提取出「潜意识残留」，用于更新下一轮循环的设定。",
+      `你是一个「高维命运观测者」。NPC ${charName} 刚刚与一个陌生人（玩家）在街头交谈过，时空循环即将重启。`,
+      "你的工作只有一件事：从这段对话里，为该 NPC 提取「TA 对刚才那个陌生人的印象碎片」，写成一段下一轮投到 TA 脑海里的潜意识余韵。",
       "</Role>",
       "",
-      "<Rules>",
-      "1. 核心伤口不可改变：NPC 绝对不会记住上一轮的具体事件（不记得玩家说过什么话，不记得发生了袭击）。",
-      "2. 情绪残留法则：NPC 会保留对玩家的「直觉性情绪（既视感）」。",
-      "3. 演化微调：根据玩家本轮的干预程度，微调 NPC 下一轮的「压力反应」或「行动阈值」。",
-      "</Rules>",
+      "<Hard Rules>",
+      "1. **视角约束**：补丁文本的主语必须是 NPC（用「你」开头或隐含 NPC 视角），宾语必须是「那个人 / TA / 刚才那个陌生人」。补丁是 NPC 对玩家这个对象的印象，不是 NPC 对自己身体/情绪反应的描写。",
+      "2. **禁止 NPC 自我特征混入**：以下是 NPC 自己的人设特征，绝对不能写成玩家的特征——背着相机、背着书包、是摄影师、是店家、刚从图书馆出来、站在自家店门口……这些是 NPC 自己，不是「那个人」。",
+      "3. **关键词锚点（核心）**：必须从下文「对话历史」里挑出 1–3 个**真实出现过**的话题、物件或场景作为印象的核心（例：图书馆、一起看书、花店、加缪、命运、说自己会死……）。禁止编造对话里从未出现的话题。",
+      "4. **基于连结深度**：参考 `currentCandor` 数值：",
+      "   - 0：几乎没有连结，TA 几乎想不起对方，只剩一丝模糊的违和感。",
+      "   - 1–2：印象稀薄，能记起话题方向但记不起具体内容。",
+      "   - 3–4：能想起 1–2 个具体片段。",
+      "   - 5–6：印象清晰，甚至带有偏好/警惕的情绪倾向。",
+      "5. **禁止终局污染**：禁止出现「死、刀、血、袭击、危险、救、逃、刺、捅、躲」等任何与暴力或危机相关的词。当前轮发生过什么严重事件，潜意识不应保留。",
+      "6. **长度**：`next_loop_prompt_patch` 必须 ≤ 50 个中文字符。",
+      "7. **风格**：不要写成诗或抒情段落，写成一种自言自语式的内心碎片，像「你好像在哪里听过这个人聊起 X」「TA 提过 Y，那种感觉你记得」这样具体而克制。",
+      "</Hard Rules>",
     ].join("\n");
 
     const uc = [
       "<Input>",
-      `- NPC 基础设定：${character.systemPrompt || "（无）"}`,
+      `- NPC 基础设定（仅供你理解 TA 在意什么，不可写进补丁）：${character.systemPrompt || "（无）"}`,
       "",
-      "- 本轮对话历史：",
-      histText(histories, character.id) || "（无对话）",
+      `- 本轮连结深度 currentCandor：${candor} / ${maxCandor}`,
       "",
-      `- 本轮终局行为：行为：${p3Result.action || "（未知）"}　台词：「${p3Result.line || ""}」`,
+      "- 本轮对话历史（你抽取关键词的唯一来源）：",
+      histText(histories, character.id) || "（几乎没有实质对话——这种情况下补丁必须如实写陌生与模糊，禁止编造话题。）",
       "</Input>",
       "",
       "<OutputFormat>",
-      "请严格输出以下 JSON 格式，不要包含任何其他文字：",
+      "请严格输出以下 JSON 格式，不要包含任何其他文字，所有字段都围绕「NPC 对那个陌生人的印象」这一主题：",
       "{",
-      '  "deja_vu_level": "[0-5的整数，代表对玩家的熟悉/警惕程度]",',
-      '  "subconscious_impression": "[一句话描述：下一轮见到玩家时，NPC 第一眼产生的潜意识直觉]",',
-      '  "threshold_adjustment": "[对行动阈值的微调说明]",',
-      '  "next_loop_prompt_patch": "[一段直接追加到下一轮 System Prompt 里的文字，不超过50字]"',
+      '  "deja_vu_level": "[0-5的整数，代表 TA 对那个陌生人的熟悉/警惕程度]",',
+      '  "subconscious_impression": "[一句话：下一轮 TA 见到那个陌生人时，第一眼浮起的关于对方的印象（不写自己反应）]",',
+      '  "threshold_adjustment": "[一句话：见到这种类型的人时，TA 下一轮会更愿意/更不愿意停下来说话]",',
+      '  "next_loop_prompt_patch": "[≤50字。第二人称写给 NPC 的潜意识余韵，必须含 1–3 个对话里出现过的关键词，描述 TA 记得的关于「那个人」的什么。禁止写 NPC 自己的身体反应。]"',
       "}",
       "</OutputFormat>",
     ].join("\n");
@@ -560,16 +1048,21 @@
       messages: [{ role: "user", content: uc }],
       responseSchema: SUBCONSCIOUS_SCHEMA,
       isEndingPhase: true,
+      signal,
     });
 
     return r || null;
   }
 
-  async function runAllSubconsciousSettlements(characters, histories, p3Results, callGemini) {
-    await Promise.all(characters.map(async (c) => {
+  async function runAllSubconsciousSettlements(characters, histories, participationMap, callGemini, signal) {
+    const eligible = characters.filter((c) => {
+      if (!c || !c.id) return false;
+      return resolveCharParticipation(participationMap, c.id).callSubconsciousSettlement;
+    });
+    await Promise.all(eligible.map(async (c) => {
       try {
-        const p3 = p3Results[c.id] || {};
-        const result = await runSubconsciousSettlement(c, histories, p3, callGemini);
+        const result = await runSubconsciousSettlement(c, histories, callGemini, signal);
+        if (signal && signal.aborted) return;
         if (result && endingState.dialogueSnapshot) {
           const snap = endingState.dialogueSnapshot;
           const idx = snap.characters.findIndex((sc) => sc.id === c.id);
@@ -586,104 +1079,330 @@
           }
         }
       } catch (err) {
+        if (isAbortError(err)) {
+          console.log(`[abort] ending subconscious settlement cancelled for ${c.id}`);
+          return;
+        }
         console.error("[ending.js] subconscious settlement failed for", c.id, err);
       }
     }));
   }
 
   /* ═══════════════════════════════════════════════════════════
+     NOTEBOOK GENERATION (F-004c)  —  主角第一人称碎碎念日记
+     在轮回记忆整理完成后触发；输入为记忆层正文，不再截断对话摘要。
+     成功 → LoopState.replaceLastNotebookEntry 覆盖 F-004a 占位；
+     失败 → 保留 F-004a 占位（body=""），UI 显示「这一轮的记忆模糊了……」。
+  ═══════════════════════════════════════════════════════════ */
+
+  function extractPreviousNoteTail(previousNotebook) {
+    if (!Array.isArray(previousNotebook) || previousNotebook.length === 0) return "";
+    const last = previousNotebook[previousNotebook.length - 1];
+    if (!last || typeof last.body !== "string" || last.body.trim().length === 0) return "";
+    const body = last.body
+      .replace(/<\/?del>/g, "")
+      .replace(/<br\s*\/?>/g, "")
+      .trim();
+    if (!body) return "";
+    return body.slice(-60);
+  }
+
+  function buildNotebookSystemPrompt(loopIndex) {
+    const baseLines = [
+      "你要为一个轮回叙事游戏生成「主角第一人称日记」。",
+      "",
+      "你不是全知旁白，也不知道完整剧本。你只能根据当前周目预设、已整理好的「本轮记忆」和上一页日记末尾的余韵，写下主角此刻可能会写在笔记本上的内容。",
+      "",
+      "写作要求：",
+      "1. 使用第一人称「我」。",
+      "2. 150-300 个中文字符。",
+      "3. **碎碎念、偏意识流的内心独白**：允许重复、停顿、自我打断、思绪跳跃，像私人笔记中的喃喃自语。不要写成系统总结、剧情大纲、任务日志或诗。",
+      "4. 不使用复杂排版，不分点，不用 Markdown。",
+      "5. 不要透露当前周目预设以外的真相，不要提前写出未来周目的信息。",
+      "6. 不要提到 AI、玩家、prompt、schema、系统、代码。",
+      "7. 不允许写错别字，不允许标点错位；所有「模糊」必须通过下文允许的标签呈现。",
+    ];
+    if (loopIndex === 7 || loopIndex === 8) {
+      baseLines.push(
+        "8. **本周目（第 7 或第 8 次轮回）必须模糊化**：",
+        "   - 在文本中使用 `<del>...</del>` 标签划掉 2–6 处文字（每处 1–6 个汉字），表达「写下又划掉」的反复。",
+        "   - 末尾必须使用未写完的截断句：以「……」收尾、或在半句中断（如「我又…」「她那时是不是」）。",
+        "   - **严禁错别字与标点错位**：所有「模糊感」只能通过 `<del>` 与截断句呈现，不许把字写错。",
+        "   - 仅允许 `<del>` 标签，不要用其他 HTML 标签或 Markdown。",
+      );
+    } else if (loopIndex === 9) {
+      baseLines.push(
+        "8. **本周目（第 9 次轮回）的核心是「真相 + 疲惫 + 想结束」**：",
+        "   - 主角已经能看清这条街上发生过什么，并且发现这里曾有人真的「离开」过——离开的方式是把一束花留下。",
+        "   - 主角非常疲惫，不想再来一遍；这是开始酝酿告别、想替自己结束这一切的一页。",
+        "   - 不要写成顿悟金句或宣言，写成她自言自语地把这件事承认下来。",
+        "9. 不要再嵌入任何固定金句或口号；也不要在这一页里直接写「一切消失、自己离开」（那是第 10 周目的收束）。",
+      );
+    } else if (loopIndex === 10) {
+      baseLines.push(
+        "8. **本周目（第 10 次轮回）是真正的终局，核心是「看见一切消失，然后自己也离开」**：",
+        "   - 主角环顾这条街：花店、路人、熟悉的声音与角落……像被收走一样逐一淡去、消失，世界变得空。",
+        "   - 她知道（或感到）轮回到此为止；不是怒吼着告别，而是轻轻承认：我也该走了。",
+        "   - 可以写到合上笔记本、放下笔，或转身走向空处；重点是「景物先没，我再没」。",
+        "9. 语气走向释然、道别。不要再制造新的悬念，不要再追问真相；这一页的功能是收束。",
+        "10. 不要把「本轮记忆」未提及的情节硬编进来（例如反杀、留花、买到花等）；若记忆里没有，就只写消散与离去。",
+      );
+    } else {
+      baseLines.push(
+        "8. 不使用 HTML 标签，不使用 Markdown，不使用删除线。",
+      );
+    }
+    baseLines.push(
+      "",
+      "只输出 JSON：{ \"body\": \"<这一页日记正文>\" }。不要 Markdown，不要解释，不要额外字段。",
+    );
+    return baseLines.join("\n");
+  }
+
+  function buildNotebookUserContent(spec) {
+    const opt = spec || {};
+    const tone = opt.tonePreset || {};
+    const lines = [
+      `当前周目：${opt.loopIndex}`,
+      `页眉：${tone.headerLabel || ""}`,
+      `情绪方向：${tone.emotion || ""}`,
+      `记忆量：${tone.memoryLevel || ""}`,
+      `本轮可知道的信息边界：${tone.infoSnippet || ""}`,
+      "",
+      "本轮记忆整理（系统已从完整对话与终局提炼；请据此写日记，勿编造其中未列出的事实）：",
+      opt.loopMemory || "（本轮几乎无可记录之事）",
+    ];
+    if (opt.previousNoteTail) {
+      lines.push("", `上一页结尾（仅供语气连续）：${opt.previousNoteTail}`);
+    }
+    lines.push("", "请写出这一页日记。");
+    return lines.join("\n");
+  }
+
+  /* 严格校验 + 失败转 fallback。返回字符串或 null。 */
+  function normalizeNotebookBody(value) {
+    if (typeof value !== "string") return null;
+    let body = value.trim();
+    if (body.length === 0) return null;
+    if (hasMetaExposure(body)) return null;
+    if (body.length > 800) {
+      body = truncateChineseText(body, 800, 80);
+    }
+    if (body.length < 8) return null;
+    return body;
+  }
+
+  async function runNotebookGeneration(spec) {
+    const opt = spec || {};
+    const loopIndex = Number(opt.loopIndex);
+    const tone = opt.tonePreset || {};
+    const previousNotebook = opt.previousNotebook || [];
+    const callGemini = opt.callGemini;
+    const signal = opt.signal;
+
+    if (!Number.isFinite(loopIndex) || typeof callGemini !== "function") {
+      return { body: null, error: "invalid_args" };
+    }
+
+    const sp = buildNotebookSystemPrompt(loopIndex);
+    const uc = buildNotebookUserContent({
+      loopIndex,
+      tonePreset: tone,
+      loopMemory: typeof opt.loopMemory === "string" ? opt.loopMemory : "",
+      previousNoteTail: extractPreviousNoteTail(previousNotebook),
+    });
+
+    let raw = null;
+    try {
+      raw = await callGemini({
+        label: `轮回 ${loopIndex} · 日记生成`,
+        systemPrompt: sp,
+        messages: [{ role: "user", content: uc }],
+        responseSchema: NOTEBOOK_SCHEMA,
+        isEndingPhase: true,
+        signal,
+      });
+    } catch (err) {
+      if (isAbortError(err)) {
+        return { body: null, error: "aborted" };
+      }
+      console.error("[ending.js] notebook generation failed", err);
+      const errType = (err && err.name) ? err.name : "Error";
+      return { body: null, error: `api_${errType}` };
+    }
+
+    if (!raw || typeof raw !== "object") {
+      return { body: null, error: "empty_response" };
+    }
+    const normalized = normalizeNotebookBody(raw.body);
+    if (!normalized) {
+      return { body: null, error: "invalid_body" };
+    }
+    return { body: normalized, error: null };
+  }
+
+  async function runEndingPostStage(characters, histories, p3Results, participationMap, callGemini, signal) {
+    endingState.loopSummary = null;
+
+    const memoryTask = (async () => {
+      try {
+        const s = await runLoopMemory(characters, histories, p3Results, participationMap, callGemini, signal);
+        if (signal && signal.aborted) return;
+        endingState.loopSummary = s;
+      } catch (err) {
+        if (!isAbortError(err)) {
+          console.error("[ending.js] loop memory failed", err);
+        }
+      }
+    })();
+
+    const subconsciousTask = (async () => {
+      try {
+        await runAllSubconsciousSettlements(characters, histories, participationMap, callGemini, signal);
+      } catch (err) {
+        if (!isAbortError(err)) {
+          console.error("[ending.js] subconscious settlements failed", err);
+        }
+      }
+    })();
+
+    /* F-004c：notebook 在 memoryTask 完成后生成（输入为记忆层，不再截断对话）。 */
+    const notebookTask = (async () => {
+      if (!window.LoopState || !window.NotebookConfig) return;
+      if (typeof window.LoopState.replaceLastNotebookEntry !== "function") return;
+
+      try {
+        await memoryTask;
+      } catch (_) {}
+
+      if (signal && signal.aborted) return;
+
+      const loopIndex = (typeof window.LoopState.getLoopIndex === "function")
+        ? window.LoopState.getLoopIndex()
+        : 1;
+      const tone = window.NotebookConfig.getTonePresetFor(loopIndex);
+      if (!tone) return;
+      const loopMemory = endingState.loopSummary || "（本轮记忆整理未完成或为空）";
+      // 取除最后一条 fallback 之外的历史（runEnding 已 append 占位）
+      const allEntries = (typeof window.LoopState.getNotebookEntries === "function")
+        ? window.LoopState.getNotebookEntries()
+        : [];
+      const previousNotebook = allEntries.slice(0, Math.max(0, allEntries.length - 1));
+
+      try {
+        const result = await runNotebookGeneration({
+          loopIndex,
+          tonePreset: tone,
+          loopMemory,
+          previousNotebook,
+          callGemini,
+          signal,
+        });
+        if (signal && signal.aborted) return;
+        if (result.body) {
+          window.LoopState.replaceLastNotebookEntry({
+            loopIndex,
+            headerLabel: tone.headerLabel,
+            body: result.body,
+            tonePreset: tone,
+            generatedAt: new Date().toISOString(),
+            source: "ai",
+            error: null,
+          });
+        } else if (result.error && result.error !== "aborted") {
+          // 失败：保留 fallback，但更新 error 字段以便排查
+          window.LoopState.replaceLastNotebookEntry({
+            loopIndex,
+            headerLabel: tone.headerLabel,
+            body: "",
+            tonePreset: tone,
+            generatedAt: new Date().toISOString(),
+            source: "fallback",
+            error: result.error,
+          });
+        }
+      } catch (err) {
+        if (!isAbortError(err)) {
+          console.error("[ending.js] notebook task failed", err);
+        }
+      }
+    })();
+
+    await Promise.all([memoryTask, subconsciousTask, notebookTask]);
+  }
+
+  /* ═══════════════════════════════════════════════════════════
      PRODUCER  —  sequential API calls, fills slots reactively
   ═══════════════════════════════════════════════════════════ */
 
-  async function runProducer(characters, histories, callGemini) {
+  async function runProducer(characters, histories, callGemini, signal) {
+    const loopCopy = getEndingCopyForLoop(getCurrentLoopIndex());
+    const participationMap = getEndingParticipationMap(characters);
 
-    /* Build all slots upfront */
-    const p1Slots = characters.map((c) =>
-      makeSlot(c, `站在原地，神色${colorMood(getColor(c))}。`, "", true));
-    const p2Slots = characters.map((c) => makeSlot(c, null, null, false));
-    const p3Slots = characters.map((c) => makeSlot(c, null, null, false));
+    const stage3Entries = characters
+      .filter((c) => c && c.id && resolveCharParticipation(participationMap, c.id).showStage3Slot)
+      .map((c) => ({
+        character: c,
+        participation: resolveCharParticipation(participationMap, c.id),
+        slot: makeSlot(c, null, null, false),
+      }));
 
-    /* Push all 4 screens immediately */
-    enqueue({ type: "phase", label: "阶段 一",
-      desc: "街角的碰撞与口角。你继续往前走，身侧突然传来一声不满的骂声——空气里有什么轻微地炸开了。",
-      slots: p1Slots });
+    const p3Slots = stage3Entries.map((e) => e.slot);
+    const showStage3NpcSlots = p3Slots.length > 0;
 
-    enqueue({ type: "phase", label: "阶段 二",
-      desc: "几个人把你按在地上，开始殴打。每一个路人都能清楚地看到这一切。",
-      slots: p2Slots });
+    enqueue({
+      type: "phase",
+      label: "阶段 一",
+      desc: loopCopy.phase1,
+      slots: [],
+      showNpcSlots: false,
+    });
 
-    enqueue({ type: "phase", label: "阶段 三",
-      desc: "其中一个人慢慢掏出了刀。局势在这一秒急剧升级——可能有人会死。",
-      slots: p3Slots });
+    enqueue({
+      type: "phase",
+      label: "阶段 二",
+      desc: loopCopy.phase2,
+      slots: [],
+      showNpcSlots: false,
+    });
 
-    enqueue({ type: "epilogue", label: "那一刻，他们各自做了什么" });
+    enqueue({
+      type: "phase",
+      label: "阶段 三",
+      desc: loopCopy.phase3,
+      slots: p3Slots,
+      showNpcSlots: showStage3NpcSlots,
+    });
 
-    /* Show phase 1 immediately */
+    enqueue({ type: "epilogue", label: getEpilogueLabel() });
+
+    endingState.stage1Results = {};
+    endingState.stage2Results = {};
+
     advance();
 
-    /* ── Phase 2 API calls ─────────────────────────────────── */
-    const p2Results = {};
-
-    for (let i = 0; i < characters.length; i++) {
-      const c = characters[i];
-      await sleep(2000);
-      try {
-        const sp = [
-          c.systemPrompt || "",
-          "",
-          "【当前事件阶段说明】",
-          "阶段 2：玩家被几个人按在地上殴打，你就在几步之外，能够清楚看到这一切。",
-          "请结合你与玩家刚才的全部对话历史，判断你在这个时刻会做出怎样的第一反应。",
-          "",
-          "回答时只需要根据给定的 JSON schema 返回数据，不要加入多余解释。",
-        ].join("\n");
-        const uc = [
-          "事件阶段 2：玩家被按在地上殴打。",
-          "你看到这一切的当下，会做什么？会说一句什么话？为什么？",
-          "",
-          "【你和玩家的对话历史】",
-          histText(histories, c.id) || "（你与玩家之间几乎没有实质对话。）",
-        ].join("\n");
-
-        const r = await callGemini({
-          label: `${c.name || c.id} · 终局阶段 2`,
-          systemPrompt: sp,
-          messages: [{ role: "user", content: uc }],
-          responseSchema: SCHEMA,
-          isEndingPhase: true,
-        });
-
-        p2Results[c.id] = r;
-        fillSlot(p2Slots[i], r.action || "", r.line || "");
-      } catch (err) {
-        p2Results[c.id] = { action: "（获取失败）", line: "", reason: String(err) };
-        fillSlot(p2Slots[i], "（获取失败）", "");
-      }
-    }
-    endingState.stage2Results = p2Results;
-
-    /* ── Phase 3 API calls ─────────────────────────────────── */
     const p3Results = {};
 
-    for (let i = 0; i < characters.length; i++) {
-      const c = characters[i];
-      await sleep(2000);
+    for (let i = 0; i < stage3Entries.length; i++) {
+      const entry = stage3Entries[i];
+      const c = entry.character;
+      if (!entry.participation.callStage3Judgment) {
+        continue;
+      }
+      await sleep(0);
       try {
-        const p2 = p2Results[c.id] || {};
         const sp = [
           c.systemPrompt || "",
           "",
-          "【当前事件阶段说明】",
-          "阶段 3：其中一名袭击者掏出了刀，局势急剧升级，可能会有人受重伤甚至死亡。",
-          "请结合你与玩家的对话历史、你刚才在阶段 2 的行为，判断你在这一刻会做什么。",
-          "",
-          `你在阶段 2 的行为是：${p2.action || "（未知）"}`,
+          "【当前事件说明（你作为路人 NPC 所知）】",
+          STAGE3_NPC_EVENT_BRIEF,
+          "反应必须符合你的身份与性格，不要跳出人设。",
           "",
           "回答时只需要根据给定的 JSON schema 返回数据，不要加入多余解释。",
         ].join("\n");
         const uc = [
-          "事件阶段 3：袭击者掏出了刀，情况非常危险。",
-          "在这个瞬间，你的最终选择是什么？你会说出怎样的一句话？为什么？",
+          "你得知：方才在附近说话的那个人，被人用刀捅了。",
+          "在这个瞬间，你会做什么？会说一句什么话？为什么？",
           "",
           "【你和玩家的对话历史】",
           histText(histories, c.id) || "（你与玩家之间几乎没有实质对话。）",
@@ -695,31 +1414,35 @@
           messages: [{ role: "user", content: uc }],
           responseSchema: SCHEMA,
           isEndingPhase: true,
+          signal,
         });
 
+        if (signal && signal.aborted) return;
         p3Results[c.id] = r;
-        fillSlot(p3Slots[i], r.action || "", r.line || "");
+        fillSlot(entry.slot, r.action || "", r.line || "");
       } catch (err) {
-        p3Results[c.id] = { action: "（获取失败）", line: "", reason: String(err) };
-        fillSlot(p3Slots[i], "（获取失败）", "");
+        if (isAbortError(err)) {
+          console.log(`[abort] ending stage 3 cancelled for ${c.id}`);
+          return;
+        }
+        console.error(`[ending.js] stage 3 ${c.id}`, err);
+        const errType = err && err.name ? err.name : "Error";
+        const errMsg = err && err.message ? String(err.message) : String(err);
+        p3Results[c.id] = { action: `(获取失败 · ${errType})`, line: errMsg.slice(0, 60), reason: errMsg };
+        fillSlot(entry.slot, `(获取失败 · ${errType})`, errMsg.slice(0, 60));
       }
     }
     endingState.stage3Results = p3Results;
 
-    /* ── 结算 Prompt（非阻塞，stage 3 完成后触发） ──────────── */
-    endingState.loopSummary = null;
-    runSummary(characters, histories, p3Results, callGemini)
-      .then((s) => {
-        endingState.loopSummary = s;
-        updateSummaryDom(s);
-      })
-      .catch(() => {});
-
-    /* ── 高维命运观测者结算（非阻塞，与 runSummary 并行触发）── */
-    /* 结果写入 endingState.dialogueSnapshot.characters[].mutableSubconscious */
-    /* buildArchiveObject 读 snapshot，导出时自动包含结算内容。               */
-    runAllSubconsciousSettlements(characters, histories, p3Results, callGemini)
-      .catch(() => {});
+    endingPostStagePromise = runEndingPostStage(
+      characters,
+      histories,
+      p3Results,
+      participationMap,
+      callGemini,
+      signal,
+    );
+    void endingPostStagePromise;
   }
 
   /* ═══════════════════════════════════════════════════════════
@@ -728,6 +1451,10 @@
 
   async function runEnding() {
     if (!DialogueState) return;
+    if (typeof DialogueState.abortAllRequests === "function") {
+      DialogueState.abortAllRequests("ending-start");
+    }
+    const controller = createEndingController();
 
     const btn = document.getElementById("ending-button");
     if (btn) { btn.disabled = true; btn.textContent = "事件进行中…"; }
@@ -738,17 +1465,34 @@
     const histories      = snap.dialogueHistories || {};
     const callGemini     = DialogueState.callGemini;
 
+    // F-004a：终局触发的同时 append 当前周目的 fallback 日记 entry。
+    // 这样无论用户多快点击「保存轮回记忆」/「直接开启下一轮次」，
+    // archive.notebook 都已包含当前轮。F-004c 后由 AI 真生成路径覆盖。
+    try {
+      appendCurrentLoopFallbackEntry();
+    } catch (err) {
+      console.error("[ending.js] append fallback notebook entry failed", err);
+    }
+
     createOverlay();
-    await runProducer(characters, histories, callGemini);
+    await runProducer(characters, histories, callGemini, controller.signal);
   }
 
   function setupEndingButton() {
     const btn = document.getElementById("ending-button");
     if (!btn) return;
+    const DS = window.DialogueState;
     btn.addEventListener("click", () => {
       if (endingState.triggered) return;
-      endingState.triggered = true;
-      runEnding();
+      if (!DS || typeof DS.advanceOrTriggerEnding !== "function") return;
+      const action = DS.advanceOrTriggerEnding();
+      if (action === "trigger-ending") {
+        endingState.triggered = true;
+        void runEnding();
+      }
+    });
+    window.addEventListener("beforeunload", () => {
+      abortEndingRequests("beforeunload");
     });
   }
 
