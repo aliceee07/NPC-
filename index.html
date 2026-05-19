@@ -27,14 +27,33 @@
       </div>
       <div class="header-config">
         <div class="config-row">
+          <label for="api-provider-select">来源</label>
+          <select id="api-provider-select">
+            <option value="gemini">Google Gemini</option>
+            <option value="siliconflow">硅基流动</option>
+          </select>
+        </div>
+        <div class="config-row">
           <label for="api-key-input">API Key</label>
-          <input id="api-key-input" type="password" placeholder="粘贴 Gemini API Key（仅保存在内存）" />
+          <input id="api-key-input" type="password" placeholder="粘贴 API Key（仅保存在内存）" />
         </div>
         <div class="config-row">
           <label for="model-name-input">模型</label>
           <input id="model-name-input" type="text" value="gemini-2.0-flash"
-            placeholder="如 gemini-2.0-flash / gemini-2.5-pro-preview" />
-          <span class="config-hint">支持思考的模型将在侧边栏显示思考过程</span>
+            placeholder="模型名称" />
+          <span class="config-hint" id="model-hint">支持思考的模型将在侧边栏显示思考过程</span>
+        </div>
+        <div class="config-row">
+          <label for="test-mode-checkbox">
+            <input id="test-mode-checkbox" type="checkbox" />
+            测试模式（跳过 AI 调用）
+          </label>
+        </div>
+        <div class="config-row">
+          <label for="api-debug-checkbox">
+            <input id="api-debug-checkbox" type="checkbox" />
+            API 调试日志（侧边栏显示步骤 + F12 更详细）
+          </label>
         </div>
       </div>
     </header>
@@ -52,13 +71,13 @@
             <div class="character player" id="player-circle" title="你">
               <span class="char-label">你</span>
             </div>
-            <div class="character npc" id="npc-1" data-character-id="char1" title="她·蓝灰">
+            <div class="character npc" id="npc-1" data-character-id="char1" title="小一">
               <span class="char-label">她</span>
             </div>
-            <div class="character npc" id="npc-2" data-character-id="char2" title="他·锈橙">
+            <div class="character npc" id="npc-2" data-character-id="char2" title="小二">
               <span class="char-label">他</span>
             </div>
-            <div class="character npc" id="npc-3" data-character-id="char3" title="她·暗紫">
+            <div class="character npc" id="npc-3" data-character-id="char3" title="三三">
               <span class="char-label">她</span>
             </div>
           </div>
@@ -67,9 +86,9 @@
         <section class="dialogue-panel">
           <div class="character-select">
             <span class="select-label">对话对象：</span>
-            <button class="character-button" data-character-id="char1">她·蓝灰</button>
-            <button class="character-button" data-character-id="char2">他·锈橙</button>
-            <button class="character-button" data-character-id="char3">她·暗紫</button>
+            <button class="character-button" data-character-id="char1">小一</button>
+            <button class="character-button" data-character-id="char2">小二</button>
+            <button class="character-button" data-character-id="char3">三三</button>
           </div>
 
           <div class="dialogue-history" id="dialogue-history">
@@ -77,6 +96,10 @@
           </div>
 
           <div class="dialogue-input-area">
+            <div class="quick-replies" id="quick-replies" hidden>
+              <button type="button" class="quick-reply-button" data-quick-slot="0"></button>
+              <button type="button" class="quick-reply-button" data-quick-slot="1"></button>
+            </div>
             <textarea id="player-input" placeholder="你想对他说什么？（Ctrl + Enter 发送）" rows="3"></textarea>
             <div class="dialogue-actions">
               <span id="closing-hint" class="closing-hint"></span>
@@ -85,7 +108,7 @@
           </div>
 
           <div class="timeline-actions">
-            <button id="ending-button">继续走 / 时间流逝 →</button>
+            <button id="ending-button" type="button">继续走 / 时间流逝 →</button>
           </div>
         </section>
 
@@ -106,14 +129,253 @@
 
     </div>
 
+    <!-- F-004b：第 2+ 周目此处渲染为 64×64 图标按钮，点击打开 #notebook-overlay。
+         第 1 周目整个 aside 由内联脚本设为 hidden。 -->
+    <aside class="notebook-panel" id="notebook-panel" aria-label="我的笔记">
+      <button type="button"
+              class="notebook-icon-btn"
+              id="notebook-open-btn"
+              aria-label="打开笔记本"
+              aria-haspopup="dialog">
+        <span class="notebook-icon-glyph" aria-hidden="true">📓</span>
+        <span class="notebook-icon-text">笔记本</span>
+      </button>
+    </aside>
+
+    <!-- F-004b：笔记本弹层（默认隐藏；点击图标按钮显示） -->
+    <div id="notebook-overlay" class="notebook-overlay" hidden role="dialog"
+         aria-modal="true" aria-labelledby="notebook-page-header">
+      <div id="notebook-modal" class="notebook-modal" role="document">
+        <header class="notebook-modal-header">
+          <h2 id="notebook-page-header" class="notebook-page-header">第一次轮回</h2>
+          <button type="button" class="notebook-close-btn" id="notebook-close-btn"
+                  aria-label="关闭笔记本">×</button>
+        </header>
+        <div class="notebook-page-body-wrap">
+          <article id="notebook-page-body" class="notebook-page-body"></article>
+          <p id="notebook-page-fallback" class="notebook-page-fallback" hidden>这一轮的记忆模糊了……</p>
+        </div>
+        <footer class="notebook-modal-footer">
+          <button type="button" class="notebook-page-btn" id="notebook-prev"
+                  aria-label="上一页">‹</button>
+          <span class="notebook-page-indicator" id="notebook-page-indicator">— / —</span>
+          <button type="button" class="notebook-page-btn" id="notebook-next"
+                  aria-label="下一页">›</button>
+        </footer>
+      </div>
+    </div>
+
   </div>
 
   <!-- config.local.js 在 .gitignore 里，不会上传 GitHub；
        不存在时页面不报错，降级到输入框手动填写 -->
   <script src="config.local.js" onerror="void 0"></script>
-  <script src="characters.js"></script>
-  <script src="dialogue.js"></script>
-  <script src="ending.js"></script>
+  <script src="characters.js?v=20260518"></script>
+  <script src="notebook-config.js?v=20260519"></script>
+  <script src="loop-script.js?v=20260519"></script>
+  <script src="ending-participation.js?v=20260519"></script>
+  <script src="dialogue.js?v=20260518"></script>
+  <script src="ending.js?v=20260519"></script>
+  <script src="loop.js?v=20260518"></script>
+
+  <script>
+    /* F-004b：笔记本入口（第 1 周目隐藏 / 第 2+ 周目图标按钮 + 弹层翻页）。
+       数据来源 window.LoopState.getNotebookEntries()；
+       骨架来自 window.NotebookConfig.LOOP_NOTEBOOK_TONE。
+       正文渲染走 renderNotebookBodyHtml 受控白名单（仅 <del> / <br>）。 */
+    (function () {
+      var panel    = document.getElementById('notebook-panel');
+      var overlay  = document.getElementById('notebook-overlay');
+      var modal    = document.getElementById('notebook-modal');
+      var openBtn  = document.getElementById('notebook-open-btn');
+      var closeBtn = document.getElementById('notebook-close-btn');
+      var prevBtn  = document.getElementById('notebook-prev');
+      var nextBtn  = document.getElementById('notebook-next');
+      var headerEl = document.getElementById('notebook-page-header');
+      var bodyEl   = document.getElementById('notebook-page-body');
+      var fbEl     = document.getElementById('notebook-page-fallback');
+      var indEl    = document.getElementById('notebook-page-indicator');
+
+      if (!panel || !overlay || !modal || !openBtn) return;
+
+      var loopIdx = 1;
+      try {
+        if (window.LoopState && typeof window.LoopState.getLoopIndex === 'function') {
+          var v = window.LoopState.getLoopIndex();
+          if (typeof v === 'number' && isFinite(v)) loopIdx = v;
+        }
+      } catch (_) { loopIdx = 1; }
+
+      if (loopIdx <= 1) {
+        panel.hidden = true;
+        panel.style.display = 'none';
+      } else {
+        panel.hidden = false;
+        panel.style.display = '';
+      }
+
+      var currentPage = 0;
+      var isOpen = false;
+
+      function getEntries() {
+        try {
+          if (window.LoopState && typeof window.LoopState.getNotebookEntries === 'function') {
+            var arr = window.LoopState.getNotebookEntries();
+            if (Array.isArray(arr)) return arr;
+          }
+        } catch (_) {}
+        return [];
+      }
+
+      /* 受控 HTML 渲染：先全转义，再放回 <del> / <br> 白名单。 */
+      function renderNotebookBodyHtml(body) {
+        if (!body || typeof body !== 'string') return '';
+        var esc = body
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;');
+        esc = esc.replace(/&lt;del&gt;/g, '<del>')
+                 .replace(/&lt;\/del&gt;/g, '</del>')
+                 .replace(/&lt;br\s*\/?&gt;/g, '<br>');
+        return esc;
+      }
+
+      function getHeaderLabelFor(entry, fallbackIndex) {
+        if (entry && typeof entry.headerLabel === 'string' && entry.headerLabel) {
+          return entry.headerLabel;
+        }
+        try {
+          if (window.NotebookConfig && typeof window.NotebookConfig.getTonePresetFor === 'function') {
+            var tone = window.NotebookConfig.getTonePresetFor(fallbackIndex);
+            if (tone && tone.headerLabel) return tone.headerLabel;
+          }
+        } catch (_) {}
+        return '第 ' + fallbackIndex + ' 次轮回';
+      }
+
+      function renderNotebookPage(pageIndex) {
+        var entries = getEntries();
+        var total = entries.length;
+        if (total === 0) {
+          headerEl.textContent = '还没有任何记录';
+          bodyEl.innerHTML = '';
+          fbEl.hidden = false;
+          fbEl.textContent = '这一轮的记忆模糊了……';
+          indEl.textContent = '0 / 0';
+          prevBtn.disabled = true;
+          nextBtn.disabled = true;
+          return;
+        }
+
+        if (pageIndex < 0) pageIndex = 0;
+        if (pageIndex >= total) pageIndex = total - 1;
+        currentPage = pageIndex;
+
+        var entry = entries[pageIndex] || {};
+        var fallbackIdx = (typeof entry.loopIndex === 'number') ? entry.loopIndex : (pageIndex + 1);
+        headerEl.textContent = getHeaderLabelFor(entry, fallbackIdx);
+
+        var body = (typeof entry.body === 'string') ? entry.body : '';
+        if (body.trim().length === 0) {
+          bodyEl.innerHTML = '';
+          fbEl.hidden = false;
+          fbEl.textContent = '这一轮的记忆模糊了……';
+        } else {
+          bodyEl.innerHTML = renderNotebookBodyHtml(body);
+          fbEl.hidden = true;
+        }
+
+        indEl.textContent = (pageIndex + 1) + ' / ' + total;
+        prevBtn.disabled = (pageIndex <= 0);
+        nextBtn.disabled = (pageIndex >= total - 1);
+      }
+
+      function goNotebookPage(delta) {
+        var entries = getEntries();
+        if (entries.length === 0) return;
+        renderNotebookPage(currentPage + delta);
+      }
+
+      function resolvePageIndex(pageOpt) {
+        var entries = getEntries();
+        if (entries.length === 0) return 0;
+        if (pageOpt === 'first' || pageOpt === 0) return 0;
+        if (pageOpt === 'last') return entries.length - 1;
+        var n = Number(pageOpt);
+        if (Number.isFinite(n)) {
+          if (n < 0) return 0;
+          if (n >= entries.length) return entries.length - 1;
+          return Math.floor(n);
+        }
+        return entries.length - 1;
+      }
+
+      function openNotebook(pageOpt) {
+        if (isOpen) {
+          renderNotebookPage(resolvePageIndex(pageOpt));
+          return;
+        }
+        isOpen = true;
+        overlay.hidden = false;
+        renderNotebookPage(resolvePageIndex(pageOpt));
+        setTimeout(function () {
+          if (closeBtn && typeof closeBtn.focus === 'function') closeBtn.focus();
+        }, 0);
+      }
+
+      function closeNotebook() {
+        if (!isOpen) return;
+        isOpen = false;
+        overlay.hidden = true;
+        if (openBtn && typeof openBtn.focus === 'function') openBtn.focus();
+      }
+
+      function handleNotebookKeydown(e) {
+        if (!isOpen) return;
+        if (e.metaKey || e.ctrlKey || e.altKey) return;
+        if (e.key === 'Escape' || e.key === 'Esc') {
+          e.preventDefault();
+          e.stopPropagation();
+          closeNotebook();
+          return;
+        }
+        if (e.key === 'ArrowLeft') {
+          e.preventDefault();
+          e.stopPropagation();
+          goNotebookPage(-1);
+          return;
+        }
+        if (e.key === 'ArrowRight') {
+          e.preventDefault();
+          e.stopPropagation();
+          goNotebookPage(1);
+          return;
+        }
+      }
+
+      if (openBtn) {
+        openBtn.addEventListener('click', function () { openNotebook('last'); });
+      }
+      if (closeBtn) closeBtn.addEventListener('click', closeNotebook);
+      if (prevBtn) prevBtn.addEventListener('click', function () { goNotebookPage(-1); });
+      if (nextBtn) nextBtn.addEventListener('click', function () { goNotebookPage(1); });
+
+      overlay.addEventListener('click', function (e) {
+        if (e.target === overlay) closeNotebook();
+      });
+
+      document.addEventListener('keydown', handleNotebookKeydown, true);
+
+      window.NPCNotebookUi = {
+        open: function (opt) {
+          var page = (opt && opt.page !== undefined) ? opt.page : 'last';
+          openNotebook(page);
+        },
+        close: closeNotebook,
+        isOpen: function () { return isOpen; },
+      };
+    })();
+  </script>
 
   <script>
     (function () {
@@ -121,14 +383,112 @@
       var lines   = overlay.querySelectorAll('.intro-line');
       var hint    = overlay.querySelector('.intro-hint');
 
+      var INTRO_LINES_BY_LOOP = {
+        1: [
+          "你好像掉进了一个不知名的地方。",
+          "不记得自己从哪里来，也不知道要去哪里。",
+          "前面有几个人。",
+          "要不要过去说说话？",
+        ],
+        2: [
+          "你又一次回到了这个地方，我好像忘了告诉你什么了",
+          "拿上你的笔记本，你可以用它记录你看见的事情",
+          "还有这把刀，相信我，你会用上的",
+          "现在，先写下上一周目的记录吧，也许我们会发现什么",
+        ],
+        3: [
+          "又回到原点",
+          "我好像想起了什么",
+          "不对，我是说你",
+          "要不要问问那个花店在哪里？",
+        ],
+        4: [
+          "又回来了。",
+          "这是第几次了。",
+          "他们还在那里。",
+          "这次问什么？",
+        ],
+        5: [
+          "又回来了。",
+          "这是第几次了。",
+          "他们还在那里。",
+          "他们为什么还在那里。",
+        ],
+        6: [
+          "又回来了。",
+          "这是第几次了。",
+          "他们还在那里。",
+          "要不要问点什么？",
+        ],
+      };
+      var INTRO_LINES_DEFAULT = [
+        "又回来了。",
+        "我也数不清这是第几次了。",
+        "但是没关系，他们还在那里。",
+        "这次想问点什么？",
+      ];
+
+      function getIntroLinesArray() {
+        var fallback = INTRO_LINES_BY_LOOP[1];
+        try {
+          if (!window.LoopState || typeof window.LoopState.getLoopIndex !== 'function') {
+            return fallback;
+          }
+          var loopIdx = window.LoopState.getLoopIndex();
+          if (typeof loopIdx !== 'number' || isNaN(loopIdx) || !isFinite(loopIdx)) {
+            return fallback;
+          }
+          if (INTRO_LINES_BY_LOOP[loopIdx]) return INTRO_LINES_BY_LOOP[loopIdx];
+          if (loopIdx >= 7) return INTRO_LINES_DEFAULT;
+          return fallback;
+        } catch (_) {
+          return fallback;
+        }
+      }
+
       var TOTAL       = lines.length; // 4
-      var COOLDOWN    = 3000;         // 3s 冷却
-      var FINAL_WAIT  = 10000;        // 最后一行后等待 10s
+      var COOLDOWN    = 3000;         // 普通行 3s 自动推进
+      var FINAL_WAIT  = 10000;        // 最后一行后 10s 自动退场
 
       var shown       = -1;     // 当前已显示到第几行（-1 = 尚未显示任何行）
-      var cooldownEnd = 0;      // 冷却结束时间戳
       var inFinalWait = false;  // 是否进入最终等待阶段
       var exiting     = false;  // 是否已开始退场
+      var countdownGen = 0;     // 取消未完成的倒计时链
+
+      function bumpIntroGen() {
+        countdownGen++;
+      }
+
+      function applyIntroLines() {
+        var introTexts = getIntroLinesArray();
+        for (var li = 0; li < lines.length; li++) {
+          lines[li].textContent = introTexts[li] || '';
+        }
+      }
+
+      function resetIntroProgress() {
+        bumpIntroGen();
+        shown = -1;
+        inFinalWait = false;
+        exiting = false;
+        hint.classList.remove('io-visible', 'io-final');
+        for (var ri = 0; ri < lines.length; ri++) {
+          lines[ri].classList.remove('io-visible');
+        }
+      }
+
+      function startIntroSequence() {
+        resetIntroProgress();
+        applyIntroLines();
+        setTimeout(function () {
+          if (!exiting) advance();
+        }, 700);
+      }
+
+      /* 由 loop.js 在周目选择遮罩关闭后调用（测试跳转 / 导入 / 续档等） */
+      window.NPCOnLoopReady = function () {
+        startIntroSequence();
+      };
 
       /* ── 更新提示文字 ── */
       function setHint(text, isFinal) {
@@ -143,11 +503,16 @@
 
       /* ── 倒计时驱动器 ── */
       function runCountdown(durationMs, onTick, onDone) {
+        var token = countdownGen;
         var end = Date.now() + durationMs;
         (function tick() {
-          if (exiting) return;
+          if (exiting || token !== countdownGen) return;
           var remaining = end - Date.now();
-          if (remaining <= 0) { onDone(); return; }
+          if (remaining <= 0) {
+            if (token !== countdownGen) return;
+            onDone();
+            return;
+          }
           onTick(Math.ceil(remaining / 1000));
           setTimeout(tick, 250);
         })();
@@ -168,28 +533,27 @@
         }, 300);
       }
 
-      /* ── 显示下一行并启动冷却 / 最终等待 ── */
+      /* ── 显示下一行并启动自动推进 / 最终等待 ── */
       function advance() {
+        if (exiting) return;
+        bumpIntroGen();
         shown++;
+        if (shown >= TOTAL) return;
         lines[shown].classList.add('io-visible');
 
         if (shown === TOTAL - 1) {
-          // 最后一行 → 15s 后自动进入主界面
           inFinalWait = true;
           runCountdown(
             FINAL_WAIT,
-            function (s) { setHint('片刻后，你迈出了脚步……  ' + s + 's', true); },
+            function (s) { setHint(s + 's 后自动离开，或点击跳过', true); },
             dismiss
           );
         } else {
-          // 普通行 → 10s 冷却
-          cooldownEnd = Date.now() + COOLDOWN;
           runCountdown(
             COOLDOWN,
-            function (s) { setHint(s + 's 后可继续', false); },
+            function (s) { setHint(s + 's 后自动继续，或点击跳过', false); },
             function () {
-              cooldownEnd = 0;
-              setHint('点击继续', false);
+              advance();
             }
           );
         }
@@ -197,8 +561,11 @@
 
       /* ── 交互入口（点击 / 键盘） ── */
       function handleInteraction() {
-        if (exiting || inFinalWait) return;
-        if (Date.now() < cooldownEnd) return; // 冷却中，忽略
+        if (exiting) return;
+        if (inFinalWait) {
+          dismiss();
+          return;
+        }
         advance();
       }
 
@@ -208,8 +575,35 @@
         handleInteraction();
       });
 
-      // 初始提示（稍作延迟，避免页面加载闪烁）
-      setTimeout(function () { setHint('点击继续', false); }, 700);
+      /* 不在此处启动：须等 loop.js 完成周目选择并调用 NPCOnLoopReady */
+    })();
+  </script>
+  <script>
+    (function () {
+      var cb = document.getElementById('test-mode-checkbox');
+      if (!cb) return;
+      try {
+        if (localStorage.getItem('npc_test_mode') === '1') cb.checked = true;
+      } catch (_) { /* ignore */ }
+      cb.addEventListener('change', function () {
+        try {
+          localStorage.setItem('npc_test_mode', cb.checked ? '1' : '0');
+        } catch (_) { /* ignore */ }
+      });
+    })();
+  </script>
+  <script>
+    (function () {
+      var cb = document.getElementById('api-debug-checkbox');
+      if (!cb) return;
+      try {
+        if (localStorage.getItem('npc_api_debug') === '1') cb.checked = true;
+      } catch (_) { /* ignore */ }
+      cb.addEventListener('change', function () {
+        try {
+          localStorage.setItem('npc_api_debug', cb.checked ? '1' : '0');
+        } catch (_) { /* ignore */ }
+      });
     })();
   </script>
 </body>

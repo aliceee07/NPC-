@@ -51,16 +51,31 @@
 
   const SYSTEM_PROMPT_BASE = createSystemPromptBase();
 
+  const EMPTY_SUBCONSCIOUS = {
+    dejaVuLevel: 0,
+    subconsciousImpression: "",
+    thresholdAdjustment: "",
+    nextLoopPromptPatch: "",
+  };
+
   const baseCharacters = [
     {
       id: "char1",
-      name: "她·蓝",
+      name: "小一",
       targetColor: "#8B9EA8",
       currentCandor: 0,
       maxCandor: MAX_CANDOR,
       currentColor: "#000000",
       candorRates: { rise: 1, fall: 1 },
+      quickReplies: [
+        "你常来这条街吗？我好像迷路了。",
+        "你看起来很孤独。",
+      ],
+      mutableSubconscious: { ...EMPTY_SUBCONSCIOUS },
       systemPrompt: `${SYSTEM_PROMPT_BASE}
+
+【此刻场景背景】
+你此刻正从图书馆回家的路上，路过这条街。书包还背着，脑子里可能还留着刚翻过的书页，但脚步已经在往家的方向走——并不赶，只是顺路经过，随时可以停下说几句。
 
 【核心伤口】
 你曾经面对爱人的堕落：先是什么都不做，后来尽力了然后放弃，最终什么都没有改变。这件事让你确信：干涉不会改变结果，只会消耗自己。你不是冷漠，你只是不再相信介入有意义。
@@ -101,13 +116,21 @@ false：对话维持礼貌但没有发生真实连结，或玩家在走情感套
     },
     {
       id: "char2",
-      name: "他",
+      name: "小二",
       targetColor: "#C4603A",
       currentCandor: 0,
       maxCandor: MAX_CANDOR,
       currentColor: "#000000",
       candorRates: { rise: 1, fall: 6 },
+      quickReplies: [
+        "你知道这里是哪里吗？我好像迷路了。",
+        "你看起来想找人聊聊。要和我说说话嘛",
+      ],
+      mutableSubconscious: { ...EMPTY_SUBCONSCIOUS },
       systemPrompt: `${SYSTEM_PROMPT_BASE}
+
+【此刻场景背景】
+你是一名摄影师，此刻正背着相机在这条街附近四处取景。你会留意光线、构图和路人不经意间的表情，对话时也可能下意识打量对方——不是为了评判，而是职业习惯。
 
 【核心伤口】
 你曾经发表了对他人的攻击性言论，随后遭到网络霸凌。这件事让你同时相信两件事：我没有错，世界是不公平的——以及——我的愤怒是有代价的，但我停不下来。这两个信念同时成立，你从来没有解决过它们之间的矛盾。
@@ -150,13 +173,21 @@ false：媚俗、浅薄、用情感牌代替思想，或任何让你觉得"傻X"
     },
     {
       id: "char3",
-      name: "她·紫",
+      name: "三三",
       targetColor: "#7B6E8F",
       currentCandor: 0,
       maxCandor: MAX_CANDOR,
       currentColor: "#000000",
       candorRates: { rise: 1, fall: 1 },
+      quickReplies: [
+        "你今天看起来不太好。",
+        "你愿意跟我聊聊吗？我好像迷路了。",
+      ],
+      mutableSubconscious: { ...EMPTY_SUBCONSCIOUS },
       systemPrompt: `${SYSTEM_PROMPT_BASE}
+
+【此刻场景背景】
+你是路边一家小店的老板娘，店门开着，人却站在门口或街边发呆。心里很想出去玩、去看看别处，但店里一时走不开——这种「想走又走不了」的惦记会悄悄渗进你的语气和话题里。
 
 【核心伤口】
 从小不被他人喜爱。这件事让你发展出一套生存逻辑：先感知对方需要什么，然后提供，然后期待被回报。当回报没有来时，世界是错的，不是你。你不觉得自己在操控，你真心认为自己在付出。
@@ -198,6 +229,30 @@ false：玩家冷淡、不回应你的情感、或明显在走程序
     },
   ];
 
+  /* 在任何 injectSubconscious 调用发生之前，对每个角色固化原始 systemPrompt。 */
+  /* 这是幂等注入的基准：无论注入多少次，始终从此快照追加，不会叠加。           */
+  baseCharacters.forEach(function (c) { c._originalSystemPrompt = c.systemPrompt; });
+
+  /* ─── injectSubconscious ─────────────────────────────────── */
+  /* 将导入的 mutableSubconscious 写入 baseCharacters 对应项。   */
+  /* 若 nextLoopPromptPatch 非空，重写 systemPrompt（幂等：      */
+  /* 始终 = _originalSystemPrompt + patch，多次调用结果相同）。  */
+  function injectSubconscious(charId, data) {
+    const char = baseCharacters.find(function (c) { return c.id === charId; });
+    if (!char) return;
+    char.mutableSubconscious = {
+      dejaVuLevel:            data.dejaVuLevel            || 0,
+      subconsciousImpression: data.subconsciousImpression || "",
+      thresholdAdjustment:    data.thresholdAdjustment    || "",
+      nextLoopPromptPatch:    data.nextLoopPromptPatch     || "",
+    };
+    if (data.nextLoopPromptPatch) {
+      char.systemPrompt = char._originalSystemPrompt + "\n\n【前世记忆补丁】\n" + data.nextLoopPromptPatch;
+    } else {
+      char.systemPrompt = char._originalSystemPrompt;
+    }
+  }
+
   /* candorLevel is an absolute value (0–MAX_CANDOR) */
   function updateCandorAndColor(character, candorLevel) {
     const max = character.maxCandor || MAX_CANDOR;
@@ -229,6 +284,7 @@ false：玩家冷淡、不回应你的情感、或明显在走程序
     baseCharacters,
     updateCandorAndColor,
     stepCandorAndColor,
+    injectSubconscious,
     mixColors,
     clamp,
     hexToRgb,

@@ -303,6 +303,18 @@ body {
   pointer-events: none;
 }
 
+.character-button.is-locked {
+  opacity: 0.42;
+}
+
+.character-button.is-passed {
+  opacity: 0.35;
+}
+
+.character-button:disabled:not(.active) {
+  cursor: not-allowed;
+}
+
 .dialogue-history {
   flex: 1 1 0;         /* flex-basis: 0 forces height to be governed by flex-grow only */
   height: 0;           /* belt-and-suspenders: prevents intrinsic size from leaking out */
@@ -406,6 +418,37 @@ body {
   gap: 6px;
 }
 
+.quick-replies {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.quick-reply-button {
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.04);
+  color: #d9dbe3;
+  font-size: 12px;
+  line-height: 1.35;
+  cursor: pointer;
+  transition: background-color 150ms, border-color 150ms, opacity 120ms;
+  max-width: 100%;
+  text-align: left;
+}
+
+.quick-reply-button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.09);
+  border-color: rgba(255, 255, 255, 0.32);
+}
+
+.quick-reply-button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
 .dialogue-input-area textarea {
   resize: vertical;
   min-height: 60px;
@@ -423,6 +466,11 @@ body {
   color: #555;
 }
 
+.dialogue-panel.is-readonly .dialogue-input-area textarea {
+  opacity: 0.72;
+  cursor: not-allowed;
+}
+
 .dialogue-actions {
   display: flex;
   align-items: center;
@@ -438,13 +486,15 @@ body {
 
 .timeline-actions {
   display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   justify-content: flex-end;
+  align-items: center;
 }
 
-/* ─── Shared Button Styles ───────────────────────────────── */
-
 #send-button,
-#ending-button {
+#ending-button,
+#move-on-button {
   padding: 6px 14px;
   border-radius: 999px;
   border: none;
@@ -457,16 +507,28 @@ body {
 }
 
 #send-button:disabled,
-#ending-button:disabled {
+#ending-button:disabled,
+#move-on-button:disabled {
   opacity: 0.5;
   cursor: default;
   transform: none !important;
 }
 
 #send-button:hover:not(:disabled),
-#ending-button:hover:not(:disabled) {
+#ending-button:hover:not(:disabled),
+#move-on-button:hover:not(:disabled) {
   transform: translateY(-1px);
   box-shadow: 0 0 16px rgba(255, 255, 255, 0.2);
+}
+
+#move-on-button {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  color: #cfd2dc;
+}
+
+#move-on-button:hover:not(:disabled) {
+  background-color: rgba(255, 255, 255, 0.06);
 }
 
 /* ─── AI Sidebar ─────────────────────────────────────────── */
@@ -617,6 +679,33 @@ body {
   color: #e07070;
   line-height: 1.5;
   word-break: break-all;
+  white-space: pre-wrap;
+}
+
+.ai-output-item.is-info .ai-output-item-header {
+  background-color: rgba(80, 140, 220, 0.12);
+}
+
+.ai-output-item.is-info .ai-output-label {
+  color: #8ab4f8;
+}
+
+.ai-output-info-body {
+  padding: 8px 10px;
+  font-size: 11px;
+  color: #9ab;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, Consolas, monospace;
+}
+
+.ai-output-item.is-success .ai-output-item-header {
+  background-color: rgba(60, 160, 90, 0.15);
+}
+
+.ai-output-item.is-success .ai-output-label {
+  color: #7dce9a;
 }
 
 /* Collapsible sections */
@@ -1090,6 +1179,15 @@ body {
   text-align: center;
 }
 
+.eo-notebook-status {
+  flex-basis: 100%;
+  margin: 0 0 0.5rem;
+  font-size: 0.88rem;
+  line-height: 1.45;
+  color: rgba(220, 210, 195, 0.85);
+  text-align: center;
+}
+
 .eo-actions {
   display: flex;
   gap: 12px;
@@ -1120,4 +1218,467 @@ body {
 
 .eo-btn-secondary:hover {
   color: #aaa;
+}
+
+.eo-final-leave-hint {
+  margin: 20px 0 8px;
+  font-size: 15px;
+  line-height: 1.6;
+  color: #b8b0a8;
+  letter-spacing: 0.04em;
+  text-align: center;
+}
+
+/* ─── Loop Select Overlay ────────────────────────────────── */
+
+#loop-select-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background-color: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: default;
+  user-select: none;
+  opacity: 1;
+  transition: opacity 800ms ease;
+}
+
+#loop-select-overlay.ls-fading {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.ls-options {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 36px;
+  max-width: 480px;
+  padding: 0 32px;
+  text-align: center;
+}
+
+.ls-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 300;
+  letter-spacing: 0.12em;
+  color: #444;
+}
+
+.ls-option {
+  margin: 0;
+  padding: 0;
+  background: none;
+  border: none;
+  outline: none;
+  cursor: pointer;
+  font-size: 18px;
+  font-weight: 300;
+  font-family: inherit;
+  letter-spacing: 0.06em;
+  color: #888;
+  transition: color 300ms ease;
+}
+
+.ls-option:hover {
+  color: #ebebeb;
+}
+
+.ls-option--dim {
+  font-size: 14px;
+  color: #555;
+}
+
+.ls-option--dim:hover {
+  color: #aaa;
+}
+
+.ls-auto-msg {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 300;
+  letter-spacing: 0.1em;
+  color: #666;
+}
+
+.ls-import-box {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 440px;
+  max-width: calc(100vw - 48px);
+  animation: ls-fade-in 400ms ease both;
+}
+
+.ls-import-box--hidden {
+  display: none;
+}
+
+@keyframes ls-fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.ls-textarea {
+  resize: vertical;
+  min-height: 100px;
+  padding: 8px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background-color: #06070a;
+  color: #ebebeb;
+  font-size: 12px;
+  font-family: inherit;
+  line-height: 1.5;
+}
+
+.ls-textarea::placeholder {
+  color: #444;
+}
+
+.ls-confirm-btn {
+  align-self: flex-end;
+  padding: 6px 16px;
+  border-radius: 999px;
+  border: none;
+  cursor: pointer;
+  background: linear-gradient(135deg, #e8e8e8, #b0b0b0);
+  color: #06070a;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  transition: transform 80ms, box-shadow 120ms;
+}
+
+.ls-confirm-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 0 16px rgba(255, 255, 255, 0.2);
+}
+
+.ls-status {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: #666;
+  min-height: 1.4em;
+}
+
+.ls-preview {
+  margin: 0;
+  font-size: 11px;
+  font-family: inherit;
+  letter-spacing: 0.04em;
+  color: #666;
+  white-space: pre-wrap;
+  line-height: 1.8;
+}
+
+.ls-option--test {
+  color: #6a8f6a;
+}
+
+.ls-option--test:hover {
+  color: #9fd49f;
+}
+
+.ls-test-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.ls-select {
+  min-width: 140px;
+  padding: 6px 10px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background-color: #06070a;
+  color: #ebebeb;
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.ls-status--test {
+  color: #5a7a5a;
+  font-size: 10px;
+}
+
+/* ─── Epilogue Summary Block ─────────────────────────────── */
+
+.eo-summary-block {
+  margin: 0 auto 28px;
+  max-width: 36rem;
+  font-size: 13px;
+  font-weight: 300;
+  letter-spacing: 0.06em;
+  line-height: 1.75;
+  color: #888;
+  min-height: 1.6em;
+  text-align: left;
+  white-space: pre-wrap;
+  transition: opacity 200ms ease;
+  opacity: 1;
+}
+
+.epilogue-hint-flower {
+  margin: 12px auto 26px;
+  max-width: 34rem;
+  font-size: 12px;
+  font-style: italic;
+  opacity: 0.6;
+  color: #7a7984;
+  text-align: center;
+  letter-spacing: 0.06em;
+  line-height: 1.65;
+}
+
+.epilogue-hint-flower[hidden] {
+  display: none;
+}
+
+/* ─── Main UI: Notebook (F-004b) ───────────────────────── */
+/* 右下角 64×64 图标按钮容器（第 2+ 周目可见；第 1 周目 hidden）。 */
+
+.notebook-panel {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  width: 64px;
+  height: 64px;
+  z-index: 12;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  overflow: visible;
+}
+
+.notebook-icon-btn {
+  width: 64px;
+  height: 64px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background-color: rgba(10, 11, 14, 0.85);
+  color: #d4d4d4;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  cursor: pointer;
+  padding: 0;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(6px);
+  transition: transform 120ms ease, border-color 120ms ease, background-color 120ms ease;
+}
+
+.notebook-icon-btn:hover {
+  border-color: rgba(255, 255, 255, 0.36);
+  background-color: rgba(20, 22, 28, 0.92);
+  transform: translateY(-1px);
+}
+
+.notebook-icon-btn:active {
+  transform: translateY(0);
+}
+
+.notebook-icon-glyph {
+  font-size: 22px;
+  line-height: 1;
+}
+
+.notebook-icon-text {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: #b8b8b8;
+}
+
+/* ─── 笔记本弹层（遮罩 + 居中主体 + 翻页） ───────────── */
+
+.notebook-overlay {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(0, 0, 0, 0.45);
+  z-index: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4vh 4vw;
+}
+
+.notebook-overlay[hidden] {
+  display: none;
+}
+
+.notebook-modal {
+  position: relative;
+  width: min(70vw, 900px);
+  height: 80vh;
+  max-height: 720px;
+  background-color: #14151a;
+  color: #e6e6e6;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  z-index: 710;
+}
+
+.notebook-modal-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 24px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.notebook-page-header {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  color: #d8d8d8;
+}
+
+.notebook-close-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background-color: transparent;
+  color: #b8b8b8;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+
+.notebook-close-btn:hover {
+  background-color: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.notebook-page-body-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 24px 32px;
+  display: flex;
+  flex-direction: column;
+}
+
+.notebook-page-body {
+  font-size: 15px;
+  line-height: 1.85;
+  letter-spacing: 0.03em;
+  color: #d8d8d8;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 7-8 周目的 <del> 视觉化为划掉效果 */
+.notebook-page-body del {
+  text-decoration: line-through;
+  text-decoration-color: rgba(180, 180, 180, 0.55);
+  text-decoration-thickness: 1px;
+  opacity: 0.55;
+  color: #b9b9b9;
+}
+
+.notebook-page-fallback {
+  margin: auto;
+  font-size: 14px;
+  color: #6c6c6c;
+  font-style: italic;
+  letter-spacing: 0.08em;
+  text-align: center;
+}
+
+.notebook-modal-footer {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 24px 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.notebook-page-btn {
+  width: 40px;
+  height: 32px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background-color: transparent;
+  color: #cfcfcf;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+
+.notebook-page-btn:hover:not(:disabled) {
+  background-color: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.notebook-page-btn:disabled {
+  opacity: 0.32;
+  cursor: not-allowed;
+}
+
+.notebook-page-indicator {
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  color: #888;
+}
+
+@media (max-width: 720px) {
+  .notebook-panel {
+    right: 12px;
+    bottom: 12px;
+    width: 56px;
+    height: 56px;
+  }
+
+  .notebook-icon-btn {
+    width: 56px;
+    height: 56px;
+    border-radius: 10px;
+  }
+
+  .notebook-icon-glyph {
+    font-size: 20px;
+  }
+
+  .notebook-icon-text {
+    font-size: 10px;
+  }
+
+  .notebook-modal {
+    width: 92vw;
+    height: 88vh;
+    max-height: none;
+  }
+
+  .notebook-modal-header {
+    padding: 12px 16px 8px;
+  }
+
+  .notebook-page-body-wrap {
+    padding: 16px 18px;
+  }
+
+  .notebook-page-body {
+    font-size: 14px;
+  }
 }
