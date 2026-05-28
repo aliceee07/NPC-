@@ -235,9 +235,14 @@ false：玩家冷淡、不回应你的情感、或明显在走程序
 
   /* ─── injectSubconscious ─────────────────────────────────── */
   /* 将导入的 mutableSubconscious 写入 baseCharacters 对应项。   */
-  /* 若 nextLoopPromptPatch 非空，重写 systemPrompt（幂等：      */
-  /* 始终 = _originalSystemPrompt + patch，多次调用结果相同）。  */
-  function injectSubconscious(charId, data) {
+  /* systemPrompt 拼装为三段式（幂等：始终以 _originalSystemPrompt */
+  /* 为基准重写，多次调用结果相同；禁止 +=）：                    */
+  /*   _originalSystemPrompt                                      */
+  /*   + 【这段时间你模糊地察觉到的事】 ← opts.staticPatch         */
+  /*       （由 loop.js 从 window.NPCLoopMemory 按 loopIndex 查询） */
+  /*   + 【你刚刚遇到的那个陌生人的印象】 ← data.nextLoopPromptPatch*/
+  /*       （上一周目 AI 提取的动态补丁）                          */
+  function injectSubconscious(charId, data, opts) {
     const char = baseCharacters.find(function (c) { return c.id === charId; });
     if (!char) return;
     char.mutableSubconscious = {
@@ -246,11 +251,17 @@ false：玩家冷淡、不回应你的情感、或明显在走程序
       thresholdAdjustment:    data.thresholdAdjustment    || "",
       nextLoopPromptPatch:    data.nextLoopPromptPatch     || "",
     };
-    if (data.nextLoopPromptPatch) {
-      char.systemPrompt = char._originalSystemPrompt + "\n\n【前世记忆补丁】\n" + data.nextLoopPromptPatch;
-    } else {
-      char.systemPrompt = char._originalSystemPrompt;
+    var staticPatch = (opts && typeof opts.staticPatch === "string") ? opts.staticPatch.trim() : "";
+    var dynamicPatch = (data.nextLoopPromptPatch || "").trim();
+
+    var sp = char._originalSystemPrompt;
+    if (staticPatch) {
+      sp += "\n\n【这段时间你模糊地察觉到的事（重要限制：以下内容只能产生模糊的似曾相识感，禁止直接引用或复述其中的具体情节、台词或事件细节；只能以「好像」「说不清」「有种熟悉感」等模糊语气体现）】\n" + staticPatch;
     }
+    if (dynamicPatch) {
+      sp += "\n\n【你刚刚遇到的那个陌生人的印象（重要限制：这来自过往周目的模糊余韵，只能以「有种说不清的感觉」「好像在哪里见过」等方式影响你的态度，禁止直接引用具体台词或过去发生的具体事件）】\n" + dynamicPatch;
+    }
+    char.systemPrompt = sp;
   }
 
   /* candorLevel is an absolute value (0–MAX_CANDOR) */

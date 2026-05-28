@@ -35,7 +35,94 @@
     currentLoopIndex: 1,
     lastLoopSummary: "",
     notebook: [],
+    completedStageIds: [],  // Phase 2 新增：已完成的 stageId 列表（随 injectArchive hydrate）
   };
+
+  // ──────────────────────────────────────────────────────────────
+  // Phase 2：三路径级升级函数（§3.3）
+  // 说明：v1 存档 loop_index 在不同写入路径下语义不同，必须分别处理
+  // ──────────────────────────────────────────────────────────────
+
+  function inferCompletedStageIds(resumeLoopIndex) {
+    /* 推断 completed_stage_ids：所有 legacyLoopIndex < resumeLoopIndex 的 stage */
+    if (!window.StageCatalog) return [];
+    var all = window.StageCatalog.getAll();
+    var result = [];
+    all.forEach(function (e) {
+      if (e.legacyLoopIndex < resumeLoopIndex) {
+        result.push(e.stageId);
+      }
+    });
+    return result;
+  }
+
+  /**
+   * upgradePendingArchive — sessionStorage 路径（doStartNextLoop 写入）
+   * 语义：raw.loop_index 已是"下一周目"（ending.js 写入时已 +1）= resume target
+   * 父 agent 补丁1：若 resumeLoopIndex > MAX_LOOP_INDEX 返回 null
+   */
+  function upgradePendingArchive(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    if (raw.archive_version === 2) return raw;  // 已是 v2，直接返回
+    var resumeLoopIndex = Math.floor(Number(raw.loop_index));
+    if (!Number.isFinite(resumeLoopIndex) || resumeLoopIndex < 1) return null;
+    if (resumeLoopIndex > MAX_TEST_LOOP_INDEX) return null;  // 已是终局，返回 null
+    var currentStageId = window.StageCatalog
+      ? window.StageCatalog.fromLoopIndex(resumeLoopIndex)
+      : null;
+    if (!currentStageId) return null;
+    var legacyLoopIndex = resumeLoopIndex;
+    var completedStageIds = inferCompletedStageIds(resumeLoopIndex);
+    return Object.assign({}, raw, {
+      archive_version:     2,
+      current_stage_id:    currentStageId,
+      legacy_loop_index:   legacyLoopIndex,
+      completed_stage_ids: completedStageIds,
+    });
+  }
+
+  /**
+   * upgradeExportArchive — 手动导入路径（用户导出的 JSON 文件）
+   * 语义：raw.loop_index 是"已完成周目"，需 +1 才是 resume target
+   * 父 agent 补丁1：若 resumeLoopIndex > MAX_LOOP_INDEX 返回 null
+   */
+  function upgradeExportArchive(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    if (raw.archive_version === 2) return raw;  // 已是 v2，直接返回
+    var completedLoopIndex = Math.floor(Number(raw.loop_index));
+    if (!Number.isFinite(completedLoopIndex) || completedLoopIndex < 1) return null;
+    var resumeLoopIndex = completedLoopIndex + 1;  // 必须 +1
+    if (resumeLoopIndex > MAX_TEST_LOOP_INDEX) return null;  // 已是终局，返回 null
+    var currentStageId;
+    try {
+      currentStageId = window.StageCatalog
+        ? window.StageCatalog.fromLoopIndex(resumeLoopIndex)
+        : null;
+    } catch (e) {
+      return null;
+    }
+    if (!currentStageId) return null;
+    var legacyLoopIndex = resumeLoopIndex;
+    // completed_stage_ids 包含所有 legacyLoopIndex <= completedLoopIndex 的 stage
+    var completedStageIds = inferCompletedStageIds(resumeLoopIndex);
+    return Object.assign({}, raw, {
+      archive_version:     2,
+      current_stage_id:    currentStageId,
+      legacy_loop_index:   legacyLoopIndex,
+      completed_stage_ids: completedStageIds,
+    });
+  }
+
+  /**
+   * upgradeRestoredArchive — 云端拉取存档路径（Phase 3 使用）
+   * 语义：云端存档应已是 v2；历史上传的 v1 按 pending 语义处理（loop_index = resume target）
+   */
+  function upgradeRestoredArchive(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    if (raw.archive_version === 2) return raw;  // 已是 v2，直接返回
+    // v1 历史存档：按 upgradePendingArchive 同等处理
+    return upgradePendingArchive(raw);
+  }
 
   /* ─── notebook entry 归一化 ───────────────────────────────── */
   function normalizeNotebookEntries(raw) {
@@ -91,6 +178,11 @@
 
   function finishLoopSelect() {
     releaseInterceptor();
+    if (window.NPCNotebookUi && typeof window.NPCNotebookUi.syncPanelVisibility === "function") {
+      try {
+        window.NPCNotebookUi.syncPanelVisibility();
+      } catch (_) { /* ignore */ }
+    }
     notifyIntroReady();
   }
 
@@ -141,13 +233,34 @@
     }
 
     const chars = archive.characters;
+    /* 当前周目编号：优先读 v2 存档的 legacy_loop_index；回退 loopState.currentLoopIndex；
+       最后兜底 archive.loop_index（v1 兼容）。
+       注意：injectArchive 只读取已升级好的字段，不做推断（父 agent 补丁2）。 */
+    var loopIdx = Number(loopState.currentLoopIndex);
+    if (!Number.isFinite(loopIdx) || loopIdx < 1) {
+      if (archive.archive_version === 2 && typeof archive.legacy_loop_index === "number") {
+        loopIdx = archive.legacy_loop_index;
+      } else {
+        loopIdx = Number(archive.loop_index);
+      }
+    }
+
+    // Phase 2：hydrate completedStageIds（只读取已升级存档的字段，不推断）
+    if (archive.archive_version === 2 && Array.isArray(archive.completed_stage_ids)) {
+      loopState.completedStageIds = archive.completed_stage_ids.slice();
+    } else {
+      loopState.completedStageIds = [];
+    }
     Object.keys(chars).forEach(function (charId) {
       const entry = chars[charId];
       if (!entry || !entry.mutableSubconscious) return;
       try {
         // 数据层注入（幂等：characters.js 内已将 systemPrompt 重写为 _originalSystemPrompt + patch）
+        var staticPatch = (window.NPCLoopMemory && typeof window.NPCLoopMemory.getStaticPatchFor === "function")
+          ? window.NPCLoopMemory.getStaticPatchFor(charId, loopIdx)
+          : "";
         if (window.NPCConfig && window.NPCConfig.injectSubconscious) {
-          window.NPCConfig.injectSubconscious(charId, entry.mutableSubconscious);
+          window.NPCConfig.injectSubconscious(charId, entry.mutableSubconscious, { staticPatch: staticPatch });
         }
         // 对话层同步：从 baseCharacters 读取注入后的规范值，避免重复追加
         if (window.DialogueState && window.DialogueState.patchCharacter) {
@@ -196,12 +309,25 @@
 
     if (!archive || typeof archive.loop_index !== "number") return false;
 
+    // Phase 2：升级 v1 存档（pending 语义：loop_index 已是下一周目，不 +1）
+    var upgraded = upgradePendingArchive(archive);
+    if (!upgraded) {
+      // upgradePendingArchive 返回 null：已是终局或数据异常
+      return false;
+    }
+
     const maxLoop = getMaxLoopIndex();
-    let nextLoop = Math.floor(archive.loop_index);
+    // v2 存档优先读 legacy_loop_index；v1 存档读原 loop_index
+    var nextLoop;
+    if (upgraded.archive_version === 2 && typeof upgraded.legacy_loop_index === "number") {
+      nextLoop = Math.floor(upgraded.legacy_loop_index);
+    } else {
+      nextLoop = Math.floor(upgraded.loop_index);
+    }
     if (!Number.isFinite(nextLoop) || nextLoop < 1) return false;
     if (nextLoop > maxLoop) nextLoop = maxLoop;
     loopState.currentLoopIndex = nextLoop;
-    injectArchive(archive);
+    injectArchive(upgraded);
 
     // 显示「记忆已延续」提示，1.5s 后自动进入 intro
     var ov = createOverlay();
@@ -429,25 +555,22 @@
 
     var importLabel = document.createElement("p");
     importLabel.className = "ls-status";
-    importLabel.textContent = "粘贴上一轮导出的存档 JSON：";
 
-    var textarea = document.createElement("textarea");
-    textarea.className = "ls-textarea";
-    textarea.rows = 6;
-    textarea.placeholder = '{ "loop_index": 1, "characters": { ... } }';
+    var importHint = document.createElement("p");
+    importHint.className = "ls-status ls-status--test";
 
-    var confirmBtn = document.createElement("button");
-    confirmBtn.className = "ls-confirm-btn";
-    confirmBtn.textContent = "确认导入";
+    var importBtnRow = document.createElement("div");
+    importBtnRow.className = "ls-options";
 
-    var statusMsg = document.createElement("p");
-    statusMsg.className = "ls-status";
-    statusMsg.textContent = "";
+    var importBackBtn = document.createElement("button");
+    importBackBtn.className = "ls-confirm-btn";
+    importBackBtn.textContent = "返回";
+
+    importBtnRow.appendChild(importBackBtn);
 
     importBox.appendChild(importLabel);
-    importBox.appendChild(textarea);
-    importBox.appendChild(confirmBtn);
-    importBox.appendChild(statusMsg);
+    importBox.appendChild(importHint);
+    importBox.appendChild(importBtnRow);
     ov.appendChild(importBox);
 
     /* ── 选项 A：新的旅程 ── */
@@ -456,11 +579,13 @@
       dismissOverlay(ov, 0, finishLoopSelect);
     });
 
-    /* ── 选项 B：继续记忆 → 展示导入区 ── */
+    /* ── 选项 B：继续记忆 → 从本地日志续接 ── */
     optB.addEventListener("click", function () {
       optionsWrap.style.display = "none";
       testBox.classList.add("ls-import-box--hidden");
       importBox.classList.remove("ls-import-box--hidden");
+      resetLogRestoreUi();
+      runLogRestore();
     });
 
     /* ── 选项 C：测试跳转 ── */
@@ -495,67 +620,68 @@
       dismissOverlay(ov, 1500, finishLoopSelect);
     });
 
-    /* ── 确认导入 ── */
-    confirmBtn.addEventListener("click", function () {
-      var raw = textarea.value.trim();
-      if (!raw) {
-        statusMsg.textContent = "内容为空，请粘贴存档 JSON。";
+    /* ── 日志续接：UI 复位 ── */
+    function resetLogRestoreUi() {
+      importLabel.textContent = "正在读取本地日志……";
+      importHint.textContent = "";
+      importBackBtn.style.display = "none";
+    }
+
+    /* ── 日志续接：主流程（自动 API → 静态 logs/*.ndjson） ── */
+    async function runLogRestore() {
+      if (!window.LogRestore || typeof window.LogRestore.resolveLatestRestore !== "function") {
+        importLabel.textContent = "日志续接模块未加载，无法继续。";
+        importBackBtn.style.display = "";
         return;
       }
-
-      var archive = null;
+      var result = null;
       try {
-        archive = JSON.parse(raw);
-      } catch (_) {
-        archive = null;
+        result = await window.LogRestore.resolveLatestRestore();
+      } catch (restoreErr) {
+        console.warn("[loop] log restore failed", restoreErr);
       }
-
-      if (!archive || typeof archive.loop_index !== "number" || !archive.characters) {
-        // 解析失败
-        statusMsg.textContent = "记忆已损坏，只能重新开始。";
-        setTimeout(function () {
-          loopState.currentLoopIndex = 1;
-          dismissOverlay(ov, 0, finishLoopSelect);
-        }, 2000);
+      if (!result || !result.archive || !result.targetLoopIndex) {
+        importLabel.textContent = "未找到可用的日志记忆。";
+        importHint.textContent = "请确认「一键启动.bat」已运行，或返回开启新的旅程。";
+        importBackBtn.style.display = "";
         return;
       }
+      applyRestoreResult(result);
+    }
 
-      // 注入数据（loop_index 为已完成周目，下一 playable = +1）
-      var maxLoop = getMaxLoopIndex();
-      var nextLoop = archive.loop_index + 1;
-      if (!Number.isFinite(nextLoop) || nextLoop < 1) {
-        statusMsg.textContent = "记忆已损坏，只能重新开始。";
-        setTimeout(function () {
-          loopState.currentLoopIndex = 1;
-          dismissOverlay(ov, 0, finishLoopSelect);
-        }, 2000);
+    /* ── 日志续接：把重建出的 archive 写入 sessionStorage 后 reload，
+       由 LoopState.start → tryAutoImport 完成自动续档显示 ── */
+    function applyRestoreResult(result) {
+      try {
+        if (window.AuditLog &&
+            typeof window.AuditLog.applySessionId === "function" &&
+            result.sessionId) {
+          window.AuditLog.applySessionId(result.sessionId);
+        }
+      } catch (sessionErr) {
+        console.warn("[loop] applySessionId failed", sessionErr);
+      }
+      try {
+        sessionStorage.setItem(SESSION_KEY, JSON.stringify(result.archive));
+      } catch (storageErr) {
+        console.warn("[loop] sessionStorage write failed", storageErr);
+        importLabel.textContent = "本地存储不可用，无法续接。";
+        importHint.textContent = "";
+        importBackBtn.style.display = "";
         return;
       }
-      if (nextLoop > maxLoop) {
-        statusMsg.textContent = "已是第十次轮回的尽头，请从第一周目重新开始。";
-        return;
-      }
-      loopState.currentLoopIndex = nextLoop;
-      injectArchive(archive);
+      importLabel.textContent = "第 " + result.targetLoopIndex + " 周目 · 记忆已就绪";
+      importHint.textContent = "正在载入……";
+      setTimeout(function () {
+        location.reload();
+      }, 600);
+    }
 
-      // 显示 3s 预览
-      importBox.style.display = "none";
-      var previewWrap = document.createElement("div");
-      previewWrap.className = "ls-options";
-
-      var previewTitle = document.createElement("p");
-      previewTitle.className = "ls-status";
-      previewTitle.textContent = "第 " + loopState.currentLoopIndex + " 周目 · 记忆已载入";
-
-      var previewPre = document.createElement("pre");
-      previewPre.className = "ls-preview";
-      previewPre.textContent = buildPreviewHtml(archive);
-
-      previewWrap.appendChild(previewTitle);
-      previewWrap.appendChild(previewPre);
-      ov.appendChild(previewWrap);
-
-      dismissOverlay(ov, 3000, finishLoopSelect);
+    /* ── 返回：回到初始两选项 ── */
+    importBackBtn.addEventListener("click", function () {
+      importBox.classList.add("ls-import-box--hidden");
+      optionsWrap.style.display = "";
+      resetLogRestoreUi();
     });
   }
 
@@ -579,13 +705,16 @@
     return true;
   }
 
-  (function init() {
+  // Phase 3：将启动逻辑封装进 start()，由登录流程显式调用，不再自动执行（R-21）
+  function start() {
     if (tryFreshJourney()) return;
     var autoImported = tryAutoImport();
     if (!autoImported) {
       showManualSelect();
     }
-  })();
+  }
+
+  // Phase 3：不再立即执行 init()；start() 由外部登录完成后显式调用
 
   /* ═══════════════════════════════════════════════════════════
      PUBLIC API
@@ -593,6 +722,26 @@
 
   window.LoopState = {
     getLoopIndex: function () { return loopState.currentLoopIndex; },
+    // Phase 1 新增：将当前 loopIndex 转为 stageId（依赖 StageCatalog，未加载时返回 null）
+    getStageId: function () {
+      return window.StageCatalog
+        ? window.StageCatalog.fromLoopIndex(loopState.currentLoopIndex)
+        : null;
+    },
+    // Phase 2 新增：终局推进时将当前 stage 推入 completedStageIds
+    appendCompletedStage: function () {
+      var stageId = window.StageCatalog
+        ? window.StageCatalog.fromLoopIndex(loopState.currentLoopIndex)
+        : null;
+      if (stageId && loopState.completedStageIds.indexOf(stageId) === -1) {
+        loopState.completedStageIds.push(stageId);
+      }
+    },
+    getCompletedStageIds: function () { return loopState.completedStageIds.slice(); },
+    // Phase 2：暴露升级函数供云端恢复路径（Phase 3 SaveAdapter）使用
+    upgradeRestoredArchive: function (raw) { return upgradeRestoredArchive(raw); },
+    // Phase 3 新增：登录完成后显式调用 start()（R-21 反竞态）
+    start: start,
     jumpToTestLoop: function (loopIndex) {
       return applyTestLoopJump(loopIndex, null);
     },

@@ -1,0 +1,15 @@
+[Unit]
+Description=NPC Demo Backend Server (FastAPI + uvicorn)
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/NPC-/backend
+EnvironmentFile=/home/ubuntu/NPC-/backend/.env
+ExecStart=/home/ubuntu/NPC-/backend/venv/bin/uvicorn server:app --host 127.0.0.1 --port 8090
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

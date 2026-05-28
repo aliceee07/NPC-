@@ -18,9 +18,9 @@
       headerLabel: "第一次轮回",
     },
     2: {
-      emotion: "看见花店，意识到那很重要",
+      emotion: "对花店有说不清的执念，对死亡轮回的恐惧，被杀瞬间反复想起花店细节的不解",
       memoryLevel: "low",
-      infoSnippet: "她注意到花店，并强烈感觉那不是普通背景，但还不知道花与离开的关系。",
+      infoSnippet: "她这次又看见了那家花店，心里有种说不清的刺痛感——像是被什么要紧的东西钩住却想不起来为什么；她靠近又退开，心跳加速，怕看见什么会让她再也回不了头。死的瞬间脑子里浮现的仍是那扇橱窗，让她更加不解。",
       headerLabel: "第二次轮回",
     },
     3: {
@@ -36,15 +36,15 @@
       headerLabel: "第四次轮回",
     },
     5: {
-      emotion: "愤怒崩溃，精神崩坏",
+      emotion: "之前轮回中获得的帮助与温暖，与终于想起他们见死不救的恨意之间的撕裂矛盾",
       memoryLevel: "fractured",
-      infoSnippet: "她被死亡、旁观和凶手的记忆压垮，愤怒盖过寻找答案的理智。",
+      infoSnippet: "她记得他们在之前某些轮回里曾经温柔过、接近过，那些细节真实存在——可她同时记起了他们在关键时刻袖手旁观的样子。「为什么他们从前不救我？」这个问题比愤怒更难熬，她不知道该恨还是该心疼。",
       headerLabel: "第五次轮回",
     },
     6: {
-      emotion: "想起愉快细节，矛盾痛苦",
+      emotion: "想起某些轮回里和那三个人真实发生过的愉快瞬间，与「我是那个一次次被杀死的人」之间的矛盾痛苦",
       memoryLevel: "fractured",
-      infoSnippet: "她想起一些和旁观者相处时真实愉快的细节，因此对恨意产生动摇，痛苦更复杂。",
+      infoSnippet: "她是那个一次次死去的主人公；她想起自己曾和他们聊过书、吵过架、说过明天去哪——那些对话是真实的，她感受过温度。可她同时记得：刀落下来的那一刻，他们一个都没有动。她分不清他们是旁观者，还是差一点的朋友。",
       headerLabel: "第六次轮回",
     },
     7: {
@@ -60,15 +60,15 @@
       headerLabel: "轮回了不知道多少次……",
     },
     9: {
-      emotion: "极度疲惫，发现真相，意识到「离开」的方式",
+      emotion: "终于找到了离开的方式，决定放下，疲惫中有一丝松动",
       memoryLevel: "clear",
-      infoSnippet: "她终于看清了发生过的事，并发现这条街上有人真的离开了——离开的方式是她把一束花留下。她已经累到不想再来一遍，想要替自己结束这一切。",
+      infoSnippet: "她是那个被一次次杀死的人；她终于看清了这条街上真正发生过什么，也发现有人曾经真的离开——离开的方式是留下一束花。她累到不想再来一遍，想替自己找到那个出口，决定放下这一切。",
       headerLabel: "第九次轮回",
     },
     10: {
-      emotion: "释然，目睹一切消散，随后自己也离去",
+      emotion: "我终于离开——释怀、解脱、告别",
       memoryLevel: "resolved",
-      infoSnippet: "她做完该做的之后，看见花店、街道、那些面孔像被收走一样逐一消失；世界空下来，她也合上笔记本，准备离开。",
+      infoSnippet: "她是那个一次次死去、又一次次重来的人；这一次，她终于要离开了。花店、街道、那些面孔……像被收走一样逐一消失；世界空下来，她合上笔记本，这一次是真正的离开，不是轮回。",
       headerLabel: "第十次轮回",
     },
   };
@@ -95,10 +95,19 @@
     return idx === 7 || idx === 8;
   }
 
+  // Phase 1 追加——by-stageId wrapper
   window.NotebookConfig = {
     LOOP_NOTEBOOK_TONE,
     getTonePresetFor,
     getFinalLoopIndex,
     isObfuscatedLoop,
+    getTonePresetByStageId: function (stageId) {
+      var idx = window.StageCatalog ? window.StageCatalog.toLoopIndex(stageId) : null;
+      if (idx === null) idx = 1;
+      return getTonePresetFor(idx);
+    },
+    isObfuscatedStage: function (stageId) {
+      return stageId === 'dissolution_a' || stageId === 'dissolution_b';
+    },
   };
 })();

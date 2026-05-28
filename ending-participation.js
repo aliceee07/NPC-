@@ -18,7 +18,8 @@
   };
 
   /**
-   * 按周目覆盖。键为 loopIndex；值为 charId → 局部 flags，或 "*" 表示本局全部角色。
+   * 按 stageId 覆盖（Phase 2 迁移：key 从整数 loopIndex 改为 stageId 字符串）。
+   * 值为 charId → 局部 flags，或 "*" 表示本局全部角色。
    * 未出现的 charId 仍走 DEFAULT_FLAGS（便于后续只配置「离场」角色）。
    *
    * flags:
@@ -27,7 +28,7 @@
    *   callSubconsciousSettlement — 是否在终局后做潜意识结算
    */
   const LOOP_PARTICIPATION_OVERRIDES = {
-    10: {
+    'final_departure': {
       [ALL_CHARS]: {
         callStage3Judgment: false,
         showStage3Slot: false,
@@ -62,19 +63,20 @@
   }
 
   /**
-   * @param {{ loopIndex: number, charId: string, character?: object }} ctx
+   * Phase 2 迁移：入参改为 stageId（字符串）
+   * @param {{ stageId: string, charId: string, character?: object }} ctx
    * @returns {{ callStage3Judgment: boolean, showStage3Slot: boolean, callSubconsciousSettlement: boolean }}
    */
   function resolve(ctx) {
-    const loopIndex = Number(ctx && ctx.loopIndex);
+    const stageId = ctx && ctx.stageId;
     const charId = ctx && ctx.charId;
     let flags = { ...DEFAULT_FLAGS };
 
-    if (!Number.isFinite(loopIndex) || loopIndex < 1 || !charId) {
+    if (!stageId || typeof stageId !== "string" || !charId) {
       return flags;
     }
 
-    const bucket = LOOP_PARTICIPATION_OVERRIDES[loopIndex];
+    const bucket = LOOP_PARTICIPATION_OVERRIDES[stageId];
     if (bucket && typeof bucket === "object") {
       if (bucket[ALL_CHARS]) {
         flags = mergeFlags(flags, bucket[ALL_CHARS]);
@@ -87,14 +89,18 @@
     return flags;
   }
 
-  function getMapForCharacters(loopIndex, characters) {
+  /**
+   * Phase 2 迁移：入参改为 stageId（字符串）
+   * @param {string} stageId  当前 stage 的 stageId
+   * @param {Array} characters  角色数组
+   */
+  function getMapForCharacters(stageId, characters) {
     const map = Object.create(null);
-    const idx = Number(loopIndex);
     if (!Array.isArray(characters)) return map;
     characters.forEach(function (c) {
       if (!c || !c.id) return;
       map[c.id] = resolve({
-        loopIndex: idx,
+        stageId: stageId,
         charId: c.id,
         character: c,
       });

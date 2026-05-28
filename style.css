@@ -1220,13 +1220,126 @@ body {
   color: #aaa;
 }
 
-.eo-final-leave-hint {
+.eo-final-leave-hint,
+.eo-next-loop-hint {
   margin: 20px 0 8px;
   font-size: 15px;
   line-height: 1.6;
   color: #b8b0a8;
   letter-spacing: 0.04em;
   text-align: center;
+}
+
+.eo-next-loop-hint {
+  animation: eoNextLoopHintPulse 2.8s ease-in-out infinite;
+}
+
+@keyframes eoNextLoopHintPulse {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 1; }
+}
+
+/* 点击进下一周目：过渡层（沙漏居中 + 场景动画） */
+#ending-overlay.eo-loop-transition-active {
+  cursor: wait;
+}
+
+#ending-overlay.eo-loop-transition-active .eo-body,
+#ending-overlay.eo-loop-transition-active .eo-footer {
+  opacity: 0.35;
+  filter: blur(2px);
+  transition: opacity 500ms ease, filter 500ms ease;
+  pointer-events: none;
+}
+
+.eo-loop-transition {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 520ms ease;
+}
+
+.eo-loop-transition-visible {
+  opacity: 1;
+}
+
+.eo-loop-transition-glow {
+  position: absolute;
+  width: min(72vw, 420px);
+  height: min(72vw, 420px);
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    rgba(200, 175, 130, 0.22) 0%,
+    rgba(120, 90, 60, 0.08) 42%,
+    transparent 70%
+  );
+  animation: eoLoopGlowPulse 3.2s ease-in-out infinite;
+}
+
+.eo-loop-transition-ring {
+  position: absolute;
+  width: min(58vw, 320px);
+  height: min(58vw, 320px);
+  border-radius: 50%;
+  border: 1px solid rgba(220, 200, 170, 0.12);
+  box-shadow:
+    0 0 40px rgba(180, 150, 110, 0.08),
+    inset 0 0 60px rgba(0, 0, 0, 0.35);
+  animation: eoLoopRingSpin 12s linear infinite;
+}
+
+@keyframes eoLoopGlowPulse {
+  0%, 100% { transform: scale(0.92); opacity: 0.7; }
+  50%      { transform: scale(1.08); opacity: 1; }
+}
+
+@keyframes eoLoopRingSpin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+.eo-loop-transition-hourglass {
+  position: relative;
+  z-index: 2;
+  font-size: clamp(4.5rem, 14vw, 7.5rem);
+  line-height: 1;
+  margin: 0;
+  filter: drop-shadow(0 0 28px rgba(220, 190, 140, 0.35));
+}
+
+.eo-loop-transition-status {
+  position: relative;
+  z-index: 2;
+  margin: 8px 0 0;
+  font-size: 14px;
+  letter-spacing: 0.12em;
+  color: rgba(230, 220, 205, 0.9);
+  text-align: center;
+}
+
+.eo-loop-transition-hint {
+  position: relative;
+  z-index: 2;
+  margin: 0;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  color: rgba(160, 150, 135, 0.75);
+  text-align: center;
+  min-height: 1.4em;
+  animation: eoLoopHintFade 2.4s ease-in-out infinite;
+}
+
+@keyframes eoLoopHintFade {
+  0%, 100% { opacity: 0.45; }
+  50%      { opacity: 0.95; }
 }
 
 /* ─── Loop Select Overlay ────────────────────────────────── */
@@ -1604,6 +1717,50 @@ body {
   text-align: center;
 }
 
+.notebook-retry-row {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.notebook-retry-row[hidden] {
+  display: none !important;
+}
+
+.notebook-retry-btn {
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.06);
+  color: #d6d6d6;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background-color 120ms, transform 80ms, opacity 120ms;
+}
+
+.notebook-retry-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+  transform: translateY(-1px);
+}
+
+.notebook-retry-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.notebook-retry-status {
+  font-size: 12px;
+  color: #9a9a9a;
+}
+
+.notebook-retry-status.is-error {
+  color: #cc7a7a;
+}
+
 .notebook-modal-footer {
   flex: 0 0 auto;
   display: flex;
@@ -1681,4 +1838,137 @@ body {
   .notebook-page-body {
     font-size: 14px;
   }
+}
+
+/* ─── #1 沙漏循环动画（保存存档等待状态）─────────────────────── */
+
+@keyframes hourglass-flip {
+  0%   { transform: rotate(0deg);   opacity: 1; }
+  45%  { transform: rotate(0deg);   opacity: 1; }
+  50%  { transform: rotate(180deg); opacity: 0.6; }
+  95%  { transform: rotate(180deg); opacity: 1; }
+  100% { transform: rotate(360deg); opacity: 1; }
+}
+
+.eo-hourglass-anim {
+  display: inline-block;
+  animation: hourglass-flip 2s ease-in-out infinite;
+  margin-right: 6px;
+  font-size: 16px;
+  vertical-align: middle;
+}
+
+.eo-loop-transition-hourglass.eo-hourglass-anim {
+  display: block;
+  margin-right: 0;
+}
+
+.eo-notebook-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 13px;
+  color: #aaa;
+  margin-bottom: 8px;
+}
+
+.eo-notebook-status-text {
+  vertical-align: middle;
+}
+
+/* 重试按钮样式 */
+.eo-btn-retry {
+  font-size: 12px;
+  padding: 4px 12px;
+  background: rgba(255,255,255,0.08);
+  color: #ccc;
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.eo-btn-retry:hover {
+  background: rgba(255,255,255,0.14);
+}
+
+/* ─── #3 笔记本图标开/关放大动画（FLIP-lite：scale + opacity）── */
+
+/* 开启动画：图标按钮缩小淡出 */
+.notebook-icon-btn.nb-closing {
+  animation: nb-icon-shrink 0.35s ease-in forwards;
+}
+
+/* 关闭动画：图标按钮从小放大回来 */
+.notebook-icon-btn.nb-opening-back {
+  animation: nb-icon-expand 0.35s ease-out forwards;
+}
+
+@keyframes nb-icon-shrink {
+  from { transform: scale(1);    opacity: 1; }
+  to   { transform: scale(0.3);  opacity: 0; }
+}
+
+@keyframes nb-icon-expand {
+  from { transform: scale(0.3);  opacity: 0; }
+  to   { transform: scale(1);    opacity: 1; }
+}
+
+/* overlay 打开时放大出现 */
+.notebook-overlay.nb-enter {
+  animation: nb-overlay-enter 0.38s ease-out forwards;
+}
+
+/* overlay 关闭时缩小消失 */
+.notebook-overlay.nb-leave {
+  animation: nb-overlay-leave 0.32s ease-in forwards;
+}
+
+@keyframes nb-overlay-enter {
+  from { transform: scale(0.6);  opacity: 0; }
+  to   { transform: scale(1);    opacity: 1; }
+}
+
+@keyframes nb-overlay-leave {
+  from { transform: scale(1);    opacity: 1; }
+  to   { transform: scale(0.6);  opacity: 0; }
+}
+
+/* ─── #4 笔写字动画（第二周目首次打开）───────────────────────── */
+
+/* 笔图标绝对定位，沿轨迹移动 */
+.nb-pen-cursor {
+  position: absolute;
+  font-size: 18px;
+  pointer-events: none;
+  z-index: 720;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.nb-pen-cursor.nb-pen-visible {
+  opacity: 1;
+}
+
+@keyframes nb-pen-move {
+  0%   { transform: translate(-40px, -20px) rotate(-30deg); opacity: 0; }
+  15%  { opacity: 1; }
+  85%  { opacity: 1; }
+  100% { transform: translate(0px, 0px) rotate(-15deg); opacity: 0; }
+}
+
+.nb-pen-cursor.nb-pen-animating {
+  animation: nb-pen-move 1.8s ease-in-out forwards;
+}
+
+/* 打字机效果：隐藏原始正文内容，逐字显示 */
+.nb-typewriter-wrap {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 第二周目首次打开时的淡入包装层 */
+@keyframes nb-text-fadein {
+  from { opacity: 0; }
+  to   { opacity: 1; }
 }
