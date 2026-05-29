@@ -1,3 +1,83 @@
+# =============================================================================
+# NPC 项目 — GitHub 上传忽略规则
+# =============================================================================
 
+# --- 本地密钥与配置 ---
 config.local.js
-config.local.js
+.env
+.env.*
+!.env.example
+!backend/.env.example
+
+# --- 策划个人开发笔记（仅本地）---
+dev-notes/
+
+# --- 本地启动脚本（开发便利，非项目核心）---
+*.bat
+*.cmd
+local_server.py
+
+# --- Cursor：仅忽略 Agent 中转与调试产物；保留 .cursor/skills/ ---
+.cursor/agent-output/
+.cursor/*.log
+
+# --- IDE ---
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# --- 操作系统 ---
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+desktop.ini
+
+# --- 日志与审计运行时产物 ---
+*.log
+logs/
+*.ndjson
+_samples_*.json
+
+# --- 后端运行时数据（SQLite）---
+backend/data/
+*.sqlite
+*.sqlite3
+backend/**/*.db
+
+# --- 备份与临时文件 ---
+*.bak
+*.tmp
+*.swp
+*.swo
+*~
+~$*
+
+# --- Node / Python（防御性；当前无 package.json，预留）---
+node_modules/
+.npm
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+env/
+
+# --- 构建与部署产物（防御性）---
+dist/
+build/
+.vercel/
+.netlify/
+
+# --- 敏感凭证文件名（防御性）---
+credentials.json
+secrets.json
+*.pem
+*.key
+!*.key.example
+.cursor/skills/deploy-check/SKILL.md
+.cursor/agent-output/review_output.md
+/.cursor
+/.cursor
