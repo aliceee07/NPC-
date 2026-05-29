@@ -68,6 +68,46 @@
     return !isNpcTestMode() && hasRealApiKeyForEnding();
   }
 
+  /** 测试模式：终局日记直接使用 loop-script 占位文案，不走真实 API。 */
+  function shouldUseDefaultNotebookText() {
+    return isNpcTestMode();
+  }
+
+  /** 进入下一轮前须等待当前周目日记就绪（含测试模式默认文案路径）。 */
+  function shouldWaitForNotebookBeforeNextLoop() {
+    return shouldGateNextLoopOnNotebook() || shouldUseDefaultNotebookText();
+  }
+
+  function getDefaultNotebookBodyForLoop(loopIndex) {
+    const idx = Number(loopIndex);
+    if (!Number.isFinite(idx)) return "";
+    try {
+      if (window.LoopScript && typeof window.LoopScript.getTestNotebookBody === "function") {
+        const body = window.LoopScript.getTestNotebookBody(idx);
+        if (typeof body === "string" && body.trim().length > 0) return body;
+      }
+    } catch (_) { /* ignore */ }
+    return "[测试占位] 第 " + idx + " 周目日记。";
+  }
+
+  function applyDefaultNotebookEntry(loopIndex, tone, errorCode) {
+    if (!window.LoopState || typeof window.LoopState.replaceLastNotebookEntry !== "function") {
+      return false;
+    }
+    const body = getDefaultNotebookBodyForLoop(loopIndex);
+    if (!body || body.trim().length === 0) return false;
+    window.LoopState.replaceLastNotebookEntry({
+      loopIndex,
+      headerLabel: tone.headerLabel,
+      body,
+      tonePreset: tone,
+      generatedAt: new Date().toISOString(),
+      source: "mock",
+      error: typeof errorCode === "string" ? errorCode : null,
+    });
+    return true;
+  }
+
   function isCurrentLoopNotebookReady() {
     if (!window.LoopState || typeof window.LoopState.getNotebookEntries !== "function") {
       return true;
@@ -497,7 +537,7 @@
   }
 
   async function waitForNotebookThenStartNextLoop() {
-    const gate = shouldGateNextLoopOnNotebook();
+    const gate = shouldWaitForNotebookBeforeNextLoop();
     if (!gate) {
       setLoopTransitionStatus("轮回即将开启……");
       await sleep(480);
@@ -505,7 +545,11 @@
       return;
     }
 
-    setLoopTransitionStatus("写存档中请不要离开……");
+    setLoopTransitionStatus(
+      shouldUseDefaultNotebookText()
+        ? "正在记下本轮记忆……"
+        : "写存档中请不要离开……"
+    );
     const deadline = Date.now() + NOTEBOOK_WAIT_TIMEOUT_MS;
     try {
       if (endingPostStagePromise) {
@@ -1701,17 +1745,24 @@
       if (!window.LoopState || !window.NotebookConfig) return;
       if (typeof window.LoopState.replaceLastNotebookEntry !== "function") return;
 
+      const loopIndex = (typeof window.LoopState.getLoopIndex === "function")
+        ? window.LoopState.getLoopIndex()
+        : 1;
+      const tone = window.NotebookConfig.getTonePresetFor(loopIndex);
+      if (!tone) return;
+
+      if (shouldUseDefaultNotebookText()) {
+        if (signal && signal.aborted) return;
+        applyDefaultNotebookEntry(loopIndex, tone, null);
+        return;
+      }
+
       try {
         await memoryTask;
       } catch (_) {}
 
       if (signal && signal.aborted) return;
 
-      const loopIndex = (typeof window.LoopState.getLoopIndex === "function")
-        ? window.LoopState.getLoopIndex()
-        : 1;
-      const tone = window.NotebookConfig.getTonePresetFor(loopIndex);
-      if (!tone) return;
       const loopMemory = endingState.loopSummary || "（本轮记忆整理未完成或为空）";
       // 取除最后一条 fallback 之外的历史（runEnding 已 append 占位）
       const allEntries = (typeof window.LoopState.getNotebookEntries === "function")
@@ -1786,6 +1837,15 @@
 
     const tone = window.NotebookConfig.getTonePresetFor(loopIndex);
     if (!tone) return { ok: false, error: "missing_tone_preset" };
+
+    if (shouldUseDefaultNotebookText()) {
+      const applied = applyDefaultNotebookEntry(loopIndex, tone, null);
+      if (applied) {
+        const body = getDefaultNotebookBodyForLoop(loopIndex);
+        return { ok: true, body, error: null };
+      }
+      return { ok: false, error: "default_notebook_failed" };
+    }
 
     const previousNotebook = allEntries.slice(0, lastIndex);
     let loopMemory = endingState.loopSummary || "";

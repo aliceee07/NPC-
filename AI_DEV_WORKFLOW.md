@@ -21,7 +21,20 @@
 
 【按需阅读（根据任务涉及范围决定）】
 - NPC 数据 / 颜色逻辑      → characters.js
-- 对话流程 / AI 调用 / 渲染  → dialogue.js（此文件极脆弱，凡涉及对话逻辑必须完整阅读）
+- 对话流程 / AI 调用 / 渲染 / API 表单  → dialogue/*.js + 根目录 dialogue.js（bootstrap，极薄，仅在 DOM ready 上调 setup）
+  子模块职责（internal：window.NPCDialogue；对外 API 仍为 window.DialogueState）：
+  · core.js — 命名空间入口、常量、state、基础查询（首脚本即读取 window.NPCConfig 克隆角色）
+  · output.js — AI 侧栏输出
+  · request.js — Abort、超时 fetch、错误文案、连通性探测
+  · provider.js — schema/mock、Gemini／硅基路由、callGemini
+  · render.js — 对话 DOM、角色按钮、输入区、quick reply UI
+  · audit.js — dialogue_npc AuditLog 旁路（mock_source 判定、write、pushDialogueLogId）
+  · flow.js — appendMessage、切角、玩家回合、candor／closing（经 D.audit 记日志）
+  · settings.js — provider 表单、测试连接、事件绑定入口
+  · public-api.js — patch／reset／advance、createPublicApi()
+  · 根 dialogue.js — 仅创建 window.DialogueState 并调 settings.setup()
+  规则：window.NPCDialogue 只允许 dialogue 层内部使用；ending.js、loop.js、index.html 内联脚本等外部模块必须只调用 window.DialogueState。
+  （按任务收窄阅读：**不必**默认通读整套文件；但若动到状态／路由／DOM 任一轴，务必连同相邻耦合子模块一起核对）
 - 终局演出 / 分屏 / 导出    → ending.js
 - 周目入口 / 存档导入注入   → loop.js
 - 视觉样式 / 动画           → style.css
@@ -33,7 +46,7 @@
 影响层：
 [ ] 配置层（config）
 [ ] 数据层（characters.js）
-[ ] 对话层（dialogue.js）
+[ ] 对话层（dialogue/*.js + dialogue.js bootstrap）
 [ ] 终局层（ending.js）
 [ ] 样式层（style.css）
 [ ] HTML 结构（index.html）
@@ -115,13 +128,35 @@
 | 涉及范围 | 需阅读的文件 |
 |---|---|
 | NPC 角色数据、颜色逻辑 | `characters.js` |
-| 对话流程、AI 调用、状态管理、DOM 渲染 | `dialogue.js`（全文，该文件极脆弱） |
+| stageId / 存档 v2 升级 | `stage-catalog.js`、`loop.js` |
+| 跨周目静态补丁 | `npc-loop-memory.js` |
+| 笔记本 tone / 终局参与 | `notebook-config.js`、`ending-participation.js` |
+| 周目剧本 / 测试 mock | `loop-script.js` |
+| 云端登录与存档 | `cloud-sync.js`、`user-session.js`、`save-adapter.js` |
+| 对话流程、AI 调用、状态、DOM、设置面板 | 见 **§0** 标准 Prompt 中的对话层子模块枚举（**core / output / request / provider / render / audit / flow / settings / public-api** + **`dialogue.js` bootstrap**）。按改动点选读；牵涉状态快照、解锁推进、closing 者多读 **`core.js`、`flow.js`**；牵涉模型请求与占位 mock 者多读 **`provider.js`、`request.js`**；牵涉 UI / quick reply 者多读 **`render.js`、`settings.js`**；牵涉 dialogue_npc 审计旁路者读 **`audit.js`**；仅接线 public API 时读 **`public-api.js`** |
 | 终局演出、分屏叙事、导出 | `ending.js` |
 | 周目入口、存档导入注入 | `loop.js` |
 | 视觉样式、动画 | `style.css` |
-| API Key / 模型配置 | `config.example.js` |
+| API Key / 模型 / 云端 URL | `config.example.js` |
 
-> **原则**：宁可多读，不要少读。`dialogue.js` 是最容易产生意外副作用的文件，凡涉及对话逻辑的更新，无论范围大小，都应完整阅读该文件。
+> **原则**：宁可多读，不要少读。对话层虽已拆分，但 `core.js`／`flow.js`／`provider.js`／`render.js` 之间仍是高耦合：`state` 与历史在 **core**，回合与 candor 在 **flow**，网络与 mock 在 **provider**，DOM 在 **render**。跨轴改动时至少通读相关子模块 + 根 **`dialogue.js` bootstrap**，避免只改单文件留下不一致。
+
+### 多文件对话层阅读清单
+
+| 子模块 | 阅读触发 | 对外边界 |
+|---|---|---|
+| `dialogue/core.js` | 状态、角色顺序、解锁/关闭、API provider/key/model 查询 | 只供 `window.NPCDialogue` 内部共享 |
+| `dialogue/output.js` | AI sidebar 输出、错误/思考过程展示 | 通过 `DialogueState.appendAiOutput` 间接开放 |
+| `dialogue/request.js` | abort、超时、错误格式化、SiliconFlow 探测 | 通过 `DialogueState.abortAllRequests` 间接开放 |
+| `dialogue/provider.js` | `callGemini`、schema normalize、测试/本地 mock、provider 路由 | 通过 `DialogueState.callGemini` 间接开放 |
+| `dialogue/render.js` | 对话 DOM、角色按钮、输入禁用、quick reply UI | 内部 DOM 层，不对外开放 |
+| `dialogue/audit.js` | dialogue_npc AuditLog 旁路、mock_source 判定 | 仅 `window.NPCDialogue.audit`，不对外开放 |
+| `dialogue/flow.js` | 玩家回合、append message、candor、closing、quick reply mock | 通过 `tryAdvanceUnlock` 等 public API 间接开放 |
+| `dialogue/settings.js` | DOMContentLoaded 后事件绑定、provider 表单、测试连接按钮 | 仅由 `dialogue.js` bootstrap 调用 |
+| `dialogue/public-api.js` | `createPublicApi()` 与 `window.DialogueState` 的唯一出口 | 外部模块只能依赖这里登记的方法 |
+| `dialogue.js` | 薄 bootstrap：创建 `window.DialogueState`、调 `settings.setup()` | 不承载业务逻辑 |
+
+`window.NPCDialogue` 是内部装配命名空间，**不是 public API**。外部模块需要新能力时，应先扩展 `dialogue/public-api.js` 并同步 `ARCHITECTURE.md`，不得直接读写 `window.NPCDialogue.core.state` 或调用内部子模块。
 
 ---
 
@@ -240,7 +275,7 @@
 - 点击任意处或按任意键后，遮罩淡出消失，进入主界面
 
 ### 不应改变的部分
-不修改 dialogue.js 中的任何对话逻辑。
+不修改 `dialogue/` 内与对话回合、AI 路由相关的逻辑（含 `flow.js` / `provider.js`）。
 ```
 
 ---
@@ -275,14 +310,15 @@ AI 完成代码修改后，在回复用户前，应确认以下所有项目：
 ### 代码正确性
 - [ ] 新代码遵循 IIFE 封装模式（JS 文件）
 - [ ] 未引入新的全局变量（除非通过 `window.XXX` 显式暴露并已在文档中登记）
-- [ ] `<script>` 加载顺序未发生变化，或变化已有充分理由并已更新文档
+- [ ] `<script>` 加载顺序变更时，已确认符合 `ARCHITECTURE.md` §3.2 依赖关系，并已同步更新文档
+- [ ] 若涉及 `index.html` script、`dialogue/*.js`、`dialogue.js`、`ending.js` 或 `loop.js`，已运行 `node scripts/architecture-smoke.js`（该脚本**从 index.html 动态解析**顺序，通常**无需**再手工维护烟测内的 script 列表）
 - [ ] 所有异步操作使用 `async/await` + `try/catch`
 - [ ] 命名遵循约定：函数/变量 `camelCase`、常量 `UPPER_SNAKE_CASE`、DOM ID `kebab-case`
 
 ### 架构一致性
 - [ ] 未跨层调用（下层不知道上层的存在）
 - [ ] 未在与职责不符的文件中添加逻辑（例如不在 `characters.js` 中添加 DOM 操作）
-- [ ] 若涉及 `dialogue.js`，已完整阅读该文件并确认无跨关注点副作用
+- [ ] 若涉及对话层，已按任务范围阅读相关 `dialogue/*.js` 与 `dialogue.js` bootstrap，并确认无跨关注点副作用
 
 ### 文档同步
 - [ ] 按照§4 规则判断是否需要更新 `ARCHITECTURE.md`
@@ -299,11 +335,22 @@ AI 完成代码修改后，在回复用户前，应确认以下所有项目：
 | 约定 | 内容 |
 |---|---|
 | 模块通信 | 仅通过 `window.XXX` 全局对象，无事件总线，无依赖注入 |
-| 脚本顺序 | `config.local.js` → `characters.js` → `dialogue.js` → `ending.js` |
+| 脚本顺序 | 见 `ARCHITECTURE.md` §3.2；对话层链路为：`dialogue/core.js` → `output` → `request` → `provider` → `render` → `audit` → `flow` → `settings` → `public-api.js` → **`dialogue.js`（bootstrap）** → `ending.js` → `loop.js` → 内联脚本 |
+| 架构烟测 | 对话层或 script 顺序相关改动后运行 `node scripts/architecture-smoke.js`；脚本**从 index.html 动态解析**加载顺序并校验结构契约（跨模块相对顺序 + post-audit 固定链路 + dialogue 目录对齐），同时覆盖对话层 IIFE 载入与 `DialogueState` API |
+| NPCDialogue 边界 | `window.NPCDialogue` 仅为对话层内部命名空间；外部模块必须使用 `window.DialogueState` |
 | 错误处理 | 异步操作一律 `try/catch`；AI 调用失败返回 `null`，调用方检查 null |
 | DOM 渲染 | 全量重绘（`innerHTML` 清空后重建），无虚拟 DOM |
-| 最脆弱文件 | `dialogue.js`——同时承担状态、网络、渲染、事件，修改前必须完整阅读 |
+| 高风险区 | 对话层：**多文件 + 紧耦合**。按上文子模块清单与任务收窄阅读 |
 | API Key 位置 | `?key=` query string（已知安全权衡，Demo 项目可接受） |
+
+### 新增 `<script>` 时的检查规则（烟测自动覆盖）
+
+| 插入位置 | 开发者 / AI 需确认 | 烟测自动校验 |
+|---|---|---|
+| `audit-log.js` **之前** | 不破坏模块依赖；同步 `ARCHITECTURE.md` §3.2 | 跨模块 `ORDER_CONSTRAINTS`（如 `characters.js` 必须在 `dialogue/core.js` 前） |
+| `audit-log.js` 与 `loop.js` **之间** | 只允许 post-audit 固定结构：`log-restore.js` → 连续 `dialogue/*.js` → `dialogue.js` → `ending.js` → `loop.js` | 从 index 动态解析并与 `dialogue/` 目录对齐 |
+| 新增 `dialogue/*.js` | 在 index 中按依赖顺序插入**连续块**；**无需**修改 `architecture-smoke.js` | VM 按 index 顺序加载 + 文件存在性 |
+| `loop.js` **之后** | 只允许内联 `<script>` | 拒绝任何外部 script |
 
 ---
 
