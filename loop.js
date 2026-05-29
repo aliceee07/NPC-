@@ -172,7 +172,7 @@
   /* 周目入口遮罩完全关闭后再刷新 intro 文案并启动 intro（避免加载时误用默认第 1 周目） */
   function notifyIntroReady() {
     if (typeof window.NPCOnLoopReady === "function") {
-      window.NPCOnLoopReady();
+      window.NPCOnLoopReady(loopState.currentLoopIndex);
     }
   }
 
@@ -244,6 +244,9 @@
         loopIdx = Number(archive.loop_index);
       }
     }
+    if (Number.isFinite(loopIdx) && loopIdx >= 1) {
+      loopState.currentLoopIndex = Math.floor(loopIdx);
+    }
 
     // Phase 2：hydrate completedStageIds（只读取已升级存档的字段，不推断）
     if (archive.archive_version === 2 && Array.isArray(archive.completed_stage_ids)) {
@@ -288,6 +291,19 @@
      AUTO IMPORT  —  sessionStorage 自动导入路径
   ═══════════════════════════════════════════════════════════ */
 
+  function resolvePendingLoopIndex(archive) {
+    if (!archive || typeof archive !== "object") return null;
+    if (archive.archive_version === 2 && typeof archive.legacy_loop_index === "number") {
+      var legacyIdx = Math.floor(Number(archive.legacy_loop_index));
+      if (Number.isFinite(legacyIdx) && legacyIdx >= 1) return legacyIdx;
+    }
+    if (typeof archive.loop_index === "number") {
+      var loopIdx = Math.floor(Number(archive.loop_index));
+      if (Number.isFinite(loopIdx) && loopIdx >= 1) return loopIdx;
+    }
+    return null;
+  }
+
   function tryAutoImport() {
     var raw = null;
     try {
@@ -307,7 +323,8 @@
       return false;
     }
 
-    if (!archive || typeof archive.loop_index !== "number") return false;
+    var pendingLoopIndex = resolvePendingLoopIndex(archive);
+    if (pendingLoopIndex === null) return false;
 
     // Phase 2：升级 v1 存档（pending 语义：loop_index 已是下一周目，不 +1）
     var upgraded = upgradePendingArchive(archive);
@@ -317,14 +334,8 @@
     }
 
     const maxLoop = getMaxLoopIndex();
-    // v2 存档优先读 legacy_loop_index；v1 存档读原 loop_index
-    var nextLoop;
-    if (upgraded.archive_version === 2 && typeof upgraded.legacy_loop_index === "number") {
-      nextLoop = Math.floor(upgraded.legacy_loop_index);
-    } else {
-      nextLoop = Math.floor(upgraded.loop_index);
-    }
-    if (!Number.isFinite(nextLoop) || nextLoop < 1) return false;
+    var nextLoop = resolvePendingLoopIndex(upgraded);
+    if (nextLoop === null) return false;
     if (nextLoop > maxLoop) nextLoop = maxLoop;
     loopState.currentLoopIndex = nextLoop;
     injectArchive(upgraded);

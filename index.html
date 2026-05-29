@@ -10,10 +10,10 @@
 
   <div id="intro-overlay">
     <div class="intro-lines">
-      <p class="intro-line">你好像掉进了一个不知名的地方。</p>
-      <p class="intro-line">不记得自己从哪里来，也不知道要去哪里。</p>
-      <p class="intro-line">前面有几个人。</p>
-      <p class="intro-line intro-line--cta">要不要过去说说话？</p>
+      <p class="intro-line"></p>
+      <p class="intro-line"></p>
+      <p class="intro-line"></p>
+      <p class="intro-line intro-line--cta"></p>
       <p class="intro-hint">点击任意处继续</p>
     </div>
   </div>
@@ -603,6 +603,9 @@
       var overlay = document.getElementById('intro-overlay');
       var lines   = overlay.querySelectorAll('.intro-line');
       var hint    = overlay.querySelector('.intro-hint');
+      var introLoopIndexOverride = null;
+
+      overlay.style.pointerEvents = 'none';
 
       var INTRO_LINES_BY_LOOP = {
         1: [
@@ -649,22 +652,27 @@
         "这次想问点什么？",
       ];
 
-      function getIntroLinesArray() {
-        var fallback = INTRO_LINES_BY_LOOP[1];
-        try {
-          if (!window.LoopState || typeof window.LoopState.getLoopIndex !== 'function') {
-            return fallback;
-          }
-          var loopIdx = window.LoopState.getLoopIndex();
-          if (typeof loopIdx !== 'number' || isNaN(loopIdx) || !isFinite(loopIdx)) {
-            return fallback;
-          }
-          if (INTRO_LINES_BY_LOOP[loopIdx]) return INTRO_LINES_BY_LOOP[loopIdx];
-          if (loopIdx >= 7) return INTRO_LINES_DEFAULT;
-          return fallback;
-        } catch (_) {
-          return fallback;
+      function resolveIntroLoopIndex() {
+        if (typeof introLoopIndexOverride === 'number' &&
+            isFinite(introLoopIndexOverride) &&
+            introLoopIndexOverride >= 1) {
+          return Math.floor(introLoopIndexOverride);
         }
+        try {
+          if (window.LoopState && typeof window.LoopState.getLoopIndex === 'function') {
+            var loopIdx = Number(window.LoopState.getLoopIndex());
+            if (isFinite(loopIdx) && loopIdx >= 1) return Math.floor(loopIdx);
+          }
+        } catch (_) { /* ignore */ }
+        return 1;
+      }
+
+      function getIntroLinesArray() {
+        var loopIdx = resolveIntroLoopIndex();
+        if (loopIdx === 1) return INTRO_LINES_BY_LOOP[1];
+        if (INTRO_LINES_BY_LOOP[loopIdx]) return INTRO_LINES_BY_LOOP[loopIdx];
+        if (loopIdx >= 7) return INTRO_LINES_DEFAULT;
+        return INTRO_LINES_DEFAULT;
       }
 
       var TOTAL       = lines.length; // 4
@@ -701,13 +709,19 @@
       function startIntroSequence() {
         resetIntroProgress();
         applyIntroLines();
+        overlay.style.pointerEvents = 'auto';
         setTimeout(function () {
           if (!exiting) advance();
         }, 700);
       }
 
       /* 由 loop.js 在周目选择遮罩关闭后调用（测试跳转 / 导入 / 续档等） */
-      window.NPCOnLoopReady = function () {
+      window.NPCOnLoopReady = function (loopIndex) {
+        if (typeof loopIndex === 'number' && isFinite(loopIndex) && loopIndex >= 1) {
+          introLoopIndexOverride = Math.floor(loopIndex);
+        } else {
+          introLoopIndexOverride = null;
+        }
         startIntroSequence();
       };
 
