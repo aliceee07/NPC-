@@ -1,0 +1,16 @@
+npc.yourdomain.com {
+    # 方案 A（R-24）：root 指向 public/ 目录，仅含前端文件，不暴露 repo 敏感文件
+    root * /home/ubuntu/NPC-/public
+
+    # API 请求反代到 FastAPI（含 /api/health，R-22）
+    handle /api/* {
+        reverse_proxy 127.0.0.1:8090
+    }
+
+    # 其余所有请求走 file_server（public/ 目录下的文件）
+    handle {
+        file_server
+    }
+
+    # HTTPS 由 Caddy 自动申请 Let's Encrypt（DNS A 记录指向此服务器即可）
+}

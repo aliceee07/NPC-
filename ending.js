@@ -12,8 +12,15 @@
 
   let endingAbortController = null;
   let endingPostStagePromise = null;
+  let loopTransitionStarted = false;
 
   const NOTEBOOK_WAIT_TIMEOUT_MS = 90000;
+  const LOOP_TRANSITION_HINTS = [
+    "记忆正在沉淀……",
+    "街道在褪色……",
+    "又一次轮回即将开始……",
+    "笔记本上的字迹渐渐清晰……",
+  ];
 
   function isAbortError(err) {
     return !!err && (err.name === "AbortError" || err.code === 20);
@@ -190,7 +197,16 @@
     document.body.appendChild(ov);
 
     ov.addEventListener("click", (e) => {
-      if (e.target.closest(".eo-actions")) return; // don't advance when clicking buttons
+      if (e.target.closest(".eo-actions")) return;
+      if (e.target.closest(".eo-btn-retry")) return;
+      if (e.target.closest("#eo-loop-transition")) return;
+      const cur = queue[cursor];
+      if (cur && cur.data.type === "epilogue") {
+        if (!isOnFinalLoop() && !loopTransitionStarted) {
+          beginNextLoopTransition();
+        }
+        return;
+      }
       advance();
     });
 
@@ -248,7 +264,11 @@
       if (data.type === "phase") {
         refreshEndingFooter();
       } else {
-        setHint("");
+        if (isOnFinalLoop()) {
+          setHint("选择下方操作，或翻阅笔记本");
+        } else {
+          setHint("点击任意位置，进入下一轮轮回");
+        }
         setProgress(0);
       }
     }, 220);
@@ -335,22 +355,15 @@
       leaveHint.className = "eo-final-leave-hint";
       leaveHint.textContent = "似乎留下了什么。";
       wrap.appendChild(leaveHint);
+    } else {
+      const nextHint = document.createElement("p");
+      nextHint.className = "eo-next-loop-hint";
+      nextHint.textContent = "点击屏幕，进入下一轮轮回";
+      wrap.appendChild(nextHint);
     }
 
     const actions = document.createElement("div");
     actions.className = "eo-actions";
-
-    // ① 保存对话数据
-    const exportTxtBtn = document.createElement("button");
-    exportTxtBtn.className = "eo-btn";
-    exportTxtBtn.textContent = "保存对话数据";
-    exportTxtBtn.addEventListener("click", doExportTxt);
-
-    // ② 保存轮回记忆
-    const exportJsonBtn = document.createElement("button");
-    exportJsonBtn.className = "eo-btn";
-    exportJsonBtn.textContent = "保存轮回记忆";
-    exportJsonBtn.addEventListener("click", doExportJson);
 
     const gateNotebook = shouldGateNextLoopOnNotebook();
     let notebookStatus = null;
@@ -359,7 +372,7 @@
       const openNotebookBtn = document.createElement("button");
       openNotebookBtn.className = "eo-btn";
       openNotebookBtn.id = "eo-open-notebook-btn";
-      openNotebookBtn.textContent = "打开";
+      openNotebookBtn.textContent = "打开笔记本";
       openNotebookBtn.addEventListener("click", () => {
         if (gateNotebook && !isCurrentLoopNotebookReady()) {
           if (notebookStatus) {
@@ -379,54 +392,210 @@
         notebookStatus = document.createElement("p");
         notebookStatus.className = "eo-notebook-status";
         notebookStatus.id = "eo-notebook-status";
-        notebookStatus.textContent = "日记记录中……记录完成前请稍候。";
+
+        var hourglassElFinal = document.createElement("span");
+        hourglassElFinal.className = "eo-hourglass-anim";
+        hourglassElFinal.setAttribute("aria-hidden", "true");
+        hourglassElFinal.textContent = "⏳";
+        notebookStatus.appendChild(hourglassElFinal);
+
+        var statusTextFinal = document.createElement("span");
+        statusTextFinal.className = "eo-notebook-status-text";
+        statusTextFinal.textContent = "写存档中请不要离开……";
+        notebookStatus.appendChild(statusTextFinal);
+
         actions.appendChild(notebookStatus);
         openNotebookBtn.disabled = true;
         void waitForNotebookThenEnable(openNotebookBtn, notebookStatus, {
-          ready: "笔记本已记下全部轮回，点击「打开」翻阅。",
-          partial: "日记仍有些模糊；你仍可打开笔记本查看已有记录。",
+          ready: "存档完成，笔记本已记下全部轮回，点击「打开」翻阅。",
+          partial: "日记仍有些模糊",
+          retryCallGemini: DialogueState && DialogueState.callGemini,
         });
       }
 
-      actions.appendChild(exportTxtBtn);
-      actions.appendChild(exportJsonBtn);
       actions.appendChild(openNotebookBtn);
       actions.appendChild(playAgainBtn);
-    } else {
-      const nextLoopBtn = document.createElement("button");
-      nextLoopBtn.className = "eo-btn";
-      nextLoopBtn.id = "eo-next-loop-btn";
-      nextLoopBtn.textContent = "直接开启下一轮次";
-      nextLoopBtn.addEventListener("click", doStartNextLoop);
-
-      if (gateNotebook) {
-        notebookStatus = document.createElement("p");
-        notebookStatus.className = "eo-notebook-status";
-        notebookStatus.id = "eo-notebook-status";
-        notebookStatus.textContent = "日记记录中……记录完成前请勿开启下一轮。";
-        actions.appendChild(notebookStatus);
-        nextLoopBtn.disabled = true;
-        void waitForNotebookThenEnable(nextLoopBtn, notebookStatus, {
-          ready: "本轮日记已记下，可以开启下一轮。",
-          partial: "日记仍有些模糊；你仍可进入下一轮，但笔记本里可能只剩残缺记忆。",
-        });
-      }
-
-      const restartBtn = document.createElement("button");
-      restartBtn.className = "eo-btn eo-btn-secondary";
-      restartBtn.textContent = "重新开始";
-      restartBtn.addEventListener("click", () => {
-        abortEndingRequests("restart");
-        location.reload();
-      });
-
-      actions.appendChild(exportTxtBtn);
-      actions.appendChild(exportJsonBtn);
-      actions.appendChild(nextLoopBtn);
-      actions.appendChild(restartBtn);
+      wrap.appendChild(actions);
     }
-    wrap.appendChild(actions);
+
     return wrap;
+  }
+
+  function showLoopTransitionOverlay() {
+    const ov = document.getElementById("ending-overlay");
+    if (!ov || document.getElementById("eo-loop-transition")) return;
+
+    const layer = document.createElement("div");
+    layer.id = "eo-loop-transition";
+    layer.className = "eo-loop-transition";
+    layer.setAttribute("role", "status");
+    layer.setAttribute("aria-live", "polite");
+
+    const glow = document.createElement("div");
+    glow.className = "eo-loop-transition-glow";
+    layer.appendChild(glow);
+
+    const ring = document.createElement("div");
+    ring.className = "eo-loop-transition-ring";
+    layer.appendChild(ring);
+
+    const hourglass = document.createElement("div");
+    hourglass.className = "eo-loop-transition-hourglass eo-hourglass-anim";
+    hourglass.setAttribute("aria-hidden", "true");
+    hourglass.textContent = "⏳";
+    layer.appendChild(hourglass);
+
+    const status = document.createElement("p");
+    status.className = "eo-loop-transition-status";
+    status.id = "eo-loop-transition-status";
+    status.textContent = "写存档中请不要离开……";
+    layer.appendChild(status);
+
+    const hint = document.createElement("p");
+    hint.className = "eo-loop-transition-hint";
+    hint.id = "eo-loop-transition-hint";
+    hint.textContent = LOOP_TRANSITION_HINTS[0];
+    layer.appendChild(hint);
+
+    ov.appendChild(layer);
+    requestAnimationFrame(() => layer.classList.add("eo-loop-transition-visible"));
+
+    let hintIdx = 0;
+    const hintTimer = setInterval(() => {
+      if (!document.getElementById("eo-loop-transition-hint")) {
+        clearInterval(hintTimer);
+        return;
+      }
+      hintIdx = (hintIdx + 1) % LOOP_TRANSITION_HINTS.length;
+      hint.textContent = LOOP_TRANSITION_HINTS[hintIdx];
+    }, 2400);
+
+    layer._hintTimer = hintTimer;
+  }
+
+  function setLoopTransitionStatus(text) {
+    const el = document.getElementById("eo-loop-transition-status");
+    if (el) el.textContent = text;
+  }
+
+  function beginNextLoopTransition() {
+    if (loopTransitionStarted) return;
+    loopTransitionStarted = true;
+
+    const ov = document.getElementById("ending-overlay");
+    if (ov) ov.classList.add("eo-loop-transition-active");
+
+    const actions = document.querySelector("#ending-overlay .eo-actions");
+    if (actions) actions.style.visibility = "hidden";
+
+    setHint("");
+    const progressFill = document.getElementById("eo-progress-fill");
+    if (progressFill) progressFill.style.width = "0%";
+
+    showLoopTransitionOverlay();
+    void waitForNotebookThenStartNextLoop();
+  }
+
+  async function waitForNotebookThenStartNextLoop() {
+    const gate = shouldGateNextLoopOnNotebook();
+    if (!gate) {
+      setLoopTransitionStatus("轮回即将开启……");
+      await sleep(480);
+      doStartNextLoop();
+      return;
+    }
+
+    setLoopTransitionStatus("写存档中请不要离开……");
+    const deadline = Date.now() + NOTEBOOK_WAIT_TIMEOUT_MS;
+    try {
+      if (endingPostStagePromise) {
+        await Promise.race([
+          endingPostStagePromise,
+          sleep(NOTEBOOK_WAIT_TIMEOUT_MS),
+        ]);
+      }
+      while (!isCurrentLoopNotebookReady() && Date.now() < deadline) {
+        await sleep(300);
+      }
+    } catch (_) { /* ignore */ }
+
+    const ready = isCurrentLoopNotebookReady();
+    setLoopTransitionStatus(ready ? "记忆已记下，轮回开启……" : "记忆有些模糊，仍踏入下一轮……");
+    await sleep(ready ? 720 : 520);
+    doStartNextLoop();
+  }
+
+  function showHourglassInStatus(el, textContent) {
+    el.innerHTML = "";
+    var hg = document.createElement("span");
+    hg.className = "eo-hourglass-anim";
+    hg.setAttribute("aria-hidden", "true");
+    hg.textContent = "⏳";
+    el.appendChild(hg);
+    var tx = document.createElement("span");
+    tx.className = "eo-notebook-status-text";
+    tx.textContent = textContent || "写存档中请不要离开……";
+    el.appendChild(tx);
+  }
+
+  function showPartialWithRetry(btn, statusEl, msgs) {
+    statusEl.innerHTML = "";
+    var partialMsg = document.createElement("span");
+    partialMsg.textContent = (msgs.partial || "日记仍有些模糊") + "，网络不好，可点击重新尝试";
+    statusEl.appendChild(partialMsg);
+    var retryBtn = document.createElement("button");
+    retryBtn.className = "eo-btn eo-btn-retry";
+    retryBtn.textContent = "重新尝试";
+    statusEl.appendChild(retryBtn);
+    retryBtn.addEventListener("click", async function () {
+      retryBtn.disabled = true;
+      btn.disabled = true;
+      showHourglassInStatus(statusEl, "写存档中请不要离开……");
+      try {
+        const callGemini = msgs.retryCallGemini;
+        if (typeof callGemini !== "function") throw new Error("no callGemini");
+        const loopIndex = (window.LoopState && typeof window.LoopState.getLoopIndex === "function")
+          ? window.LoopState.getLoopIndex() : 1;
+        const tone = (window.NotebookConfig && typeof window.NotebookConfig.getTonePresetFor === "function")
+          ? window.NotebookConfig.getTonePresetFor(loopIndex) : null;
+        if (!tone) throw new Error("no tone preset");
+        const allEntries = (window.LoopState && typeof window.LoopState.getNotebookEntries === "function")
+          ? window.LoopState.getNotebookEntries() : [];
+        const previousNotebook = allEntries.slice(0, Math.max(0, allEntries.length - 1));
+        const loopMemory = endingState.loopSummary || "（本轮记忆整理未完成或为空）";
+        const result = await runNotebookGeneration({
+          loopIndex,
+          tonePreset: tone,
+          loopMemory,
+          previousNotebook,
+          callGemini,
+          signal: endingAbortController ? endingAbortController.signal : undefined,
+          retryAttempt: 1,
+        });
+        if (result && result.body) {
+          if (window.LoopState && typeof window.LoopState.replaceLastNotebookEntry === "function") {
+            window.LoopState.replaceLastNotebookEntry({
+              loopIndex,
+              headerLabel: tone.headerLabel,
+              body: result.body,
+              tonePreset: tone,
+              generatedAt: new Date().toISOString(),
+              source: "ai",
+              error: null,
+            });
+          }
+          statusEl.innerHTML = "";
+          statusEl.textContent = msgs.ready || "存档完成，可以继续。";
+        } else {
+          showPartialWithRetry(btn, statusEl, msgs);
+        }
+      } catch (err) {
+        if (!isAbortError(err)) console.error("[ending.js] retry notebook failed", err);
+        showPartialWithRetry(btn, statusEl, msgs);
+      }
+      btn.disabled = false;
+      btn.title = "";
+    });
   }
 
   async function waitForNotebookThenEnable(btn, statusEl, messages) {
@@ -446,11 +615,14 @@
     } catch (_) { /* ignore */ }
 
     const ready = isCurrentLoopNotebookReady();
+    /* 清空 status 内容（含沙漏动画） */
+    statusEl.innerHTML = "";
+
     if (ready) {
       statusEl.textContent = msgs.ready || "本轮日记已记下，可以开启下一轮。";
     } else {
-      statusEl.textContent = msgs.partial ||
-        "日记仍有些模糊；你仍可继续，但笔记本里可能只剩残缺记忆。";
+      /* 部分失败：显示"日记仍有些模糊"+ 重试提示 + 重试按钮 */
+      showPartialWithRetry(btn, statusEl, msgs);
     }
     btn.disabled = false;
     btn.title = "";
@@ -521,8 +693,8 @@
     URL.revokeObjectURL(url);
   }
 
-  /* ─── 构建 loop archive 对象（② 和 ③ 共用） ─────────────────── */
-  function buildArchiveObject(loopIndex) {
+  /* ─── 构建 loop archive 对象（② 和 ③ 共用）—— Phase 2 输出 v2 resume-state schema ── */
+  function buildArchiveObject() {
     const snap = endingState.dialogueSnapshot;
     const characters = {};
 
@@ -532,7 +704,6 @@
           ? { ...c.mutableSubconscious }
           : { dejaVuLevel: 0, subconsciousImpression: "", thresholdAdjustment: "", nextLoopPromptPatch: "" };
         // dejaVuLevel 由代码（currentCandor）决定，不使用 AI 结算返回的 deja_vu_level。
-        // 保持此优先级：代码值可信、AI 值仅供叙事参考（已体现在 nextLoopPromptPatch 中）。
         sub.dejaVuLevel = c.currentCandor || 0;
 
         characters[c.id] = {
@@ -557,13 +728,49 @@
       }
     }
 
+    // Phase 2：计算 v2 resume-state schema 字段
+    // current_stage_id = 下次加载时要进入的 stage（resume target）
+    const currentLoopIdx = getCurrentLoopIndex();
+    let currentStageId = null;
+    let nextStageId = null;
+    let legacyLoopIndex = currentLoopIdx + 1;  // 默认兜底（v1 语义）
+    if (window.StageCatalog) {
+      currentStageId = window.StageCatalog.fromLoopIndex(currentLoopIdx);
+      if (currentStageId) {
+        nextStageId = window.StageCatalog.nextStageId(currentStageId);
+        try {
+          legacyLoopIndex = window.StageCatalog.toLoopIndexStrict(nextStageId || currentStageId);
+        } catch (_) {
+          legacyLoopIndex = currentLoopIdx + 1;
+        }
+      }
+    }
+    const resumeStageId = nextStageId || currentStageId;
+
+    // completed_stage_ids：包含 appendCompletedStage() 已推入的当前 stage
+    const completedStageIds = (window.LoopState && typeof window.LoopState.getCompletedStageIds === "function")
+      ? window.LoopState.getCompletedStageIds()
+      : [];
+
+    const maxLoop = typeof getFinalLoopIndex === "function" ? getFinalLoopIndex() : 10;
+    if (legacyLoopIndex > maxLoop) {
+      legacyLoopIndex = maxLoop;
+    }
+
     return {
-      loop_index: loopIndex,
-      ran_at:     new Date().toISOString(),
+      // v2 resume-state schema（§3.4）
+      archive_version:     2,
+      current_stage_id:    resumeStageId,          // resume target：下次进入的 stage
+      completed_stage_ids: completedStageIds,       // 已完成 stage 列表（含刚完成的）
+      legacy_loop_index:   legacyLoopIndex,         // 与 current_stage_id 严格一致映射
+      // 兼容保留字段
+      loop_index:          legacyLoopIndex,         // v1 读档路径兜底（upgradePendingArchive 会读此字段）
+      ran_at:              new Date().toISOString(),
       characters,
-      summary:    endingState.loopSummary || "",
+      summary:             endingState.loopSummary || "",
       notebook,
     };
+    // 注意：next_stage_id 字段已删除（v3 修正 R-15）
   }
 
   /* ─── F-004a fallback notebook entry ───────────────────────── */
@@ -617,10 +824,8 @@
 
   /* ② 保存轮回记忆（JSON，供下次手动导入） */
   function doExportJson() {
-    const loopIndex = (window.LoopState && window.LoopState.getLoopIndex)
-      ? window.LoopState.getLoopIndex()
-      : 1;
-    const archive = buildArchiveObject(loopIndex);
+    // Phase 2：buildArchiveObject 已内部计算 resume-state，不再需要传 loopIndex
+    const archive = buildArchiveObject();
 
     const isoTs  = archive.ran_at.replace(/[:.]/g, "-").replace("Z", "");
     const blob   = new Blob([JSON.stringify(archive, null, 2)], { type: "application/json;charset=utf-8" });
@@ -634,31 +839,50 @@
     URL.revokeObjectURL(url);
   }
 
+  function persistApiConfigBeforeReload() {
+    try {
+      if (
+        window.NPCDialogue &&
+        window.NPCDialogue.settings &&
+        typeof window.NPCDialogue.settings.persistApiConfigCache === "function"
+      ) {
+        window.NPCDialogue.settings.persistApiConfigCache();
+      }
+    } catch (_) {}
+  }
+
   /* ③ 直接开启下一轮次（sessionStorage + reload） */
-  function doStartNextLoop() {
+  async function doStartNextLoop() {
     const currentIndex = getCurrentLoopIndex();
     if (currentIndex >= getFinalLoopIndex()) {
       return;
     }
-    if (shouldGateNextLoopOnNotebook() && !isCurrentLoopNotebookReady()) {
-      const statusEl = document.getElementById("eo-notebook-status");
-      if (statusEl) {
-        statusEl.textContent = "日记仍在记录中，请稍候片刻再开启下一轮。";
-      }
-      return;
-    }
     abortEndingRequests("next-loop");
-    const nextLoop = currentIndex + 1;
-    if (nextLoop > getFinalLoopIndex()) {
-      return;
+
+    // Phase 2：将当前 stage 推入 completedStageIds（在 buildArchiveObject 之前）
+    if (window.LoopState && typeof window.LoopState.appendCompletedStage === "function") {
+      window.LoopState.appendCompletedStage();
     }
-    const archive = buildArchiveObject(nextLoop);
+
+    const archive = buildArchiveObject();  // Phase 2：无需传 nextLoop，内部计算
 
     try {
       sessionStorage.setItem("npc_pending_loop", JSON.stringify(archive));
     } catch (err) {
       console.error("[ending.js] sessionStorage write failed:", err);
     }
+
+    // Phase 3：await SaveAdapter.save() 后才 reload（§2.5 强制约束）
+    if (window.SaveAdapter && typeof window.SaveAdapter.save === "function") {
+      try {
+        await window.SaveAdapter.save(archive);
+      } catch (saveErr) {
+        // SaveAdapter 内部已处理重试对话框；此处兜底静默继续
+        console.error("[ending.js] SaveAdapter.save error:", saveErr);
+      }
+    }
+
+    persistApiConfigBeforeReload();
     location.reload();
   }
 
@@ -756,7 +980,7 @@
     },
     5: {
       phase1: "又到了这个时刻——这一回你没有退。你盯住他的肩、他的手，身子一侧，准备扑上去。",
-      phase2: "他比你快半步。你挥空的那一瞬重心被带歪，整个人朝坚硬的路面栽去。",
+      phase2: "他比你快半步。你摸到了袖中的刀，可还没出鞘，手腕就被对方一把按住——重心被带歪的那一瞬，整个人朝坚硬的路面栽去。",
       phase3: "还是失败了。刀尖贴上来时，你只觉冷——和每一次一样冷。",
       epilogue: DEFAULT_EPILOGUE_LABEL,
     },
@@ -768,13 +992,13 @@
     },
     7: {
       phase1: "又到了这个时刻。你甚至数得清他第几步会贴近——差距明明白白，像一道早就画好的线。",
-      phase2: "你想动，肌肉却不听使唤，像被钉在原地，只能眼睁眼看着那条线一寸寸压近。",
+      phase2: "你想动，肌肉却不听使唤，像被钉在原地，只能眼睁眼看着那条线一寸寸压近。你甚至想不起袖中那把刀是什么时候掉的——也许根本没拿出来过。",
       phase3: "你什么也做不了。刀落下来的时候，你只剩下一种清澈的无力。",
       epilogue: DEFAULT_EPILOGUE_LABEL,
     },
     8: {
       phase1: "又到了这个时刻。脑子像被什么东西啃过，昨天、上周、上一辈子叠在同一条街上，分不清哪一层才是今天。",
-      phase2: "你明明记得结局，却还是忍不住笑出声，骂一句，又重复昨天做过的动作——像一台坏掉的录音机。",
+      phase2: "你明明记得结局，却还是忍不住笑出声，骂一句，又重复昨天做过的动作——像一台坏掉的录音机。袖中那把刀又被夺走了。像每一次。",
       phase3: "刀落下来的时候，你分不清疼和笑哪个更响；这一回，声音特别大，大到连自己的心跳都听不见。",
       epilogue: DEFAULT_EPILOGUE_LABEL,
     },
@@ -811,10 +1035,13 @@
   }
 
   function getEndingParticipationMap(characters) {
-    const loopIndex = getCurrentLoopIndex();
+    // Phase 2：改为传 stageId（ending-participation.js 已迁移到 stageId 查表）
+    const stageId = (window.LoopState && typeof window.LoopState.getStageId === "function")
+      ? window.LoopState.getStageId()
+      : null;
     try {
       if (window.EndingParticipation && typeof window.EndingParticipation.getMapForCharacters === "function") {
-        return window.EndingParticipation.getMapForCharacters(loopIndex, characters);
+        return window.EndingParticipation.getMapForCharacters(stageId, characters);
       }
     } catch (_) { /* ignore */ }
     const map = Object.create(null);
@@ -873,12 +1100,23 @@
     } catch (err) {
       console.error("[ending.js] sessionStorage write failed:", err);
     }
+    if (window.AuditLog && typeof window.AuditLog.resetSessionForNewGame === 'function') {
+      window.AuditLog.resetSessionForNewGame();
+    }
+    persistApiConfigBeforeReload();
     location.reload();
   }
 
   function getEndingCopyForLoop(loopIndex) {
     const idx = Math.max(1, Math.min(10, loopIndex));
     return ENDING_PHASE_BY_LOOP[idx] || ENDING_PHASE_BY_LOOP[1];
+  }
+
+  // Phase 1 追加——by-stageId wrapper，内部转回 legacyLoopIndex
+  function getEndingCopyByStageId(stageId) {
+    var idx = window.StageCatalog ? window.StageCatalog.toLoopIndex(stageId) : null;
+    if (idx === null) idx = 1;
+    return getEndingCopyForLoop(idx);
   }
 
   function getEpilogueLabel() {
@@ -987,6 +1225,35 @@
 
     if (!r || typeof r.summary !== "string") return "";
     const normalized = normalizeLoopMemory(r.summary);
+    /* ─── AuditLog: loop_memory ──────────────────────────────── */
+    if (window.AuditLog) {
+      (async function () {
+        try {
+          const _lmSrcIds = window.AuditLog.getAllCharDialogueLogIds()
+            .concat(window.AuditLog.getAllStage3LogIds());
+          const _lmLoopIdx = getCurrentLoopIndex();
+          const _lmIncludeStage3 = characters.some(function (ch) {
+            return resolveCharParticipation(participationMap, ch.id).callStage3Judgment;
+          });
+          const _lmLogId = await window.AuditLog.write('loop_memory', {
+            system_prompt_full: sp,
+            user_content:       uc,
+            raw_ai_output:      JSON.stringify(r),
+            raw_summary:        r.summary,
+            normalized_summary: normalized || null,
+            included_stage3:    _lmIncludeStage3,
+          }, {
+            label:     '\u8F6E\u56DE\u8BB0\u5FC6\u6574\u7406',
+            loopPhase: 'loop_' + _lmLoopIdx + '_memory',
+            sourceIds: _lmSrcIds,
+          });
+          if (_lmLogId) window.AuditLog.setLoopMemoryLogId(_lmLogId);
+        } catch (_lmErr) {
+          console.warn('[AuditLog] loop_memory log failed', _lmErr);
+        }
+      })();
+    }
+    /* ─────────────────────────────────────────────────────────── */
     return normalized || "";
   }
 
@@ -1016,6 +1283,7 @@
       "   - 3–4：能想起 1–2 个具体片段。",
       "   - 5–6：印象清晰，甚至带有偏好/警惕的情绪倾向。",
       "5. **禁止终局污染**：禁止出现「死、刀、血、袭击、危险、救、逃、刺、捅、躲」等任何与暴力或危机相关的词。当前轮发生过什么严重事件，潜意识不应保留。",
+      "8. **禁止跨周目具体引用**：`next_loop_prompt_patch` 中只能表达模糊的似曾相识感（如「好像见过」「有种熟悉感」），严禁直接引用或复述上一周目具体发生过的台词、事件、场景细节；那些只能以「说不清的感觉」形式影响 NPC 的态度，不能被明确复述。",
       "6. **长度**：`next_loop_prompt_patch` 必须 ≤ 50 个中文字符。",
       "7. **风格**：不要写成诗或抒情段落，写成一种自言自语式的内心碎片，像「你好像在哪里听过这个人聊起 X」「TA 提过 Y，那种感觉你记得」这样具体而克制。",
       "</Hard Rules>",
@@ -1051,6 +1319,48 @@
       signal,
     });
 
+    /* ─── AuditLog: subconscious_settlement ──────────────────── */
+    if (window.AuditLog && r) {
+      (async function () {
+        try {
+          const _ssSrcIds = window.AuditLog.getAllDialogueLogIds(character.id);
+          _ssSrcIds.push(window.AuditLog.getBaselineId(character.id + '_systemPrompt'));
+          const _ssLoopIdx = getCurrentLoopIndex();
+          const _ssMutableOut = {
+            subconsciousImpression: r.subconscious_impression || '',
+            thresholdAdjustment:    r.threshold_adjustment    || '',
+            nextLoopPromptPatch:    r.next_loop_prompt_patch   || '',
+          };
+          const _ssLogId = await window.AuditLog.write('subconscious_settlement', {
+            character_id:          character.id,
+            current_candor:        candor,
+            system_prompt_full:    sp,
+            user_content:          uc,
+            raw_ai_output:         JSON.stringify(r),
+            raw_parsed:            r,
+            mutable_subconscious_out: _ssMutableOut,
+          }, {
+            label:     charName + '\u00B7\u6F5C\u610F\u8BC6\u7ED3\u7B97',
+            loopPhase: 'loop_' + _ssLoopIdx + '_settle',
+            sourceIds: _ssSrcIds,
+          });
+          /* 额外注册 subconscious_patch artifact，供下周目 dialogue_npc source_ids 引用 */
+          if (r.next_loop_prompt_patch) {
+            await window.AuditLog.registerArtifact('subconscious_patch', {
+              character_id:           character.id,
+              loop_index:             _ssLoopIdx,
+              subconscious_impression: r.subconscious_impression || '',
+              threshold_adjustment:   r.threshold_adjustment    || '',
+              next_loop_prompt_patch: r.next_loop_prompt_patch   || '',
+              source_settlement_log_id: _ssLogId || null,
+            }, { loopPhase: 'between_loops' });
+          }
+        } catch (_ssErr) {
+          console.warn('[AuditLog] subconscious_settlement log failed', _ssErr);
+        }
+      })();
+    }
+    /* ─────────────────────────────────────────────────────────── */
     return r || null;
   }
 
@@ -1111,10 +1421,12 @@
     const baseLines = [
       "你要为一个轮回叙事游戏生成「主角第一人称日记」。",
       "",
+      "**视角核心约束（极重要）**：主角「我」是那个在这条街上一次次被杀死、又一次次醒来的人。她不是旁观者，不是观察者，不是旁边的路人——她是被杀的那个。所有日记都必须从「我=被反复杀死的主人公」的视角书写，绝对不能写成「我只是看着」「他们面对这件事」等旁观叙事。",
+      "",
       "你不是全知旁白，也不知道完整剧本。你只能根据当前周目预设、已整理好的「本轮记忆」和上一页日记末尾的余韵，写下主角此刻可能会写在笔记本上的内容。",
       "",
       "写作要求：",
-      "1. 使用第一人称「我」。",
+      "1. 使用第一人称「我」，且「我」始终是那个被杀死又轮回的主角本人。",
       "2. 150-300 个中文字符。",
       "3. **碎碎念、偏意识流的内心独白**：允许重复、停顿、自我打断、思绪跳跃，像私人笔记中的喃喃自语。不要写成系统总结、剧情大纲、任务日志或诗。",
       "4. 不使用复杂排版，不分点，不用 Markdown。",
@@ -1194,14 +1506,15 @@
 
   async function runNotebookGeneration(spec) {
     const opt = spec || {};
-    const loopIndex = Number(opt.loopIndex);
-    const tone = opt.tonePreset || {};
+    const loopIndex    = Number(opt.loopIndex);
+    const tone         = opt.tonePreset || {};
     const previousNotebook = opt.previousNotebook || [];
-    const callGemini = opt.callGemini;
-    const signal = opt.signal;
+    const callGemini   = opt.callGemini;
+    const signal       = opt.signal;
+    const retryAttempt = Number(opt.retryAttempt) || 0;
 
     if (!Number.isFinite(loopIndex) || typeof callGemini !== "function") {
-      return { body: null, error: "invalid_args" };
+      return { body: null, error: "invalid_args", logId: null };
     }
 
     const sp = buildNotebookSystemPrompt(loopIndex);
@@ -1212,6 +1525,18 @@
       previousNoteTail: extractPreviousNoteTail(previousNotebook),
     });
 
+    /* 注册 tone preset artifact（去重） */
+    let _tonePresetLogId = null;
+    if (window.AuditLog) {
+      try {
+        _tonePresetLogId = await window.AuditLog.registerArtifact('notebook_tone_preset', {
+          loop_index: loopIndex,
+          tone_preset: tone,
+        }, { loopPhase: 'loop_' + loopIndex + '_notebook' });
+      } catch (_) {}
+    }
+
+    const _nbT0 = Date.now();
     let raw = null;
     try {
       raw = await callGemini({
@@ -1224,21 +1549,126 @@
       });
     } catch (err) {
       if (isAbortError(err)) {
-        return { body: null, error: "aborted" };
+        return { body: null, error: "aborted", logId: null };
       }
       console.error("[ending.js] notebook generation failed", err);
       const errType = (err && err.name) ? err.name : "Error";
-      return { body: null, error: `api_${errType}` };
+      /* ─── AuditLog: diary_generation 失败（API错误）──────────── */
+      let _nbErrLogId = null;
+      if (window.AuditLog) {
+        try {
+          const _nbSrcIds = [
+            window.AuditLog.getLoopMemoryLogId(),
+            _tonePresetLogId,
+            window.AuditLog.getDiaryLogId(),
+            opt.prevFailedLogId || null,
+          ].filter(Boolean);
+          _nbErrLogId = await window.AuditLog.write('diary_generation', {
+            loop_index:        loopIndex,
+            tone_preset_log_id: _tonePresetLogId,
+            loop_memory_input: opt.loopMemory || '',
+            previous_note_tail: extractPreviousNoteTail(previousNotebook),
+            system_prompt_full: sp,
+            raw_ai_output:     null,
+            raw_body:          null,
+            normalized_body:   null,
+            source_out:        'fallback',
+            retry_attempt:     retryAttempt,
+          }, {
+            label:     '\u8F6E\u56DE' + loopIndex + '\u00B7\u65E5\u8BB0\u751F\u6210',
+            status:    'error',
+            error:     err && err.message ? String(err.message) : String(err),
+            durationMs: Date.now() - _nbT0,
+            loopPhase: 'loop_' + loopIndex + '_notebook',
+            sourceIds: _nbSrcIds,
+          });
+        } catch (_) {}
+      }
+      /* ─────────────────────────────────────────────────────────── */
+      return { body: null, error: `api_${errType}`, logId: _nbErrLogId };
     }
 
     if (!raw || typeof raw !== "object") {
-      return { body: null, error: "empty_response" };
+      let _nbEmptyLogId = null;
+      if (window.AuditLog) {
+        try {
+          const _nbSrcIds = [
+            window.AuditLog.getLoopMemoryLogId(),
+            _tonePresetLogId,
+            window.AuditLog.getDiaryLogId(),
+          ].filter(Boolean);
+          _nbEmptyLogId = await window.AuditLog.write('diary_generation', {
+            loop_index: loopIndex, tone_preset_log_id: _tonePresetLogId,
+            loop_memory_input: opt.loopMemory || '', previous_note_tail: extractPreviousNoteTail(previousNotebook),
+            system_prompt_full: sp, raw_ai_output: null, raw_body: null,
+            normalized_body: null, source_out: 'fallback', retry_attempt: retryAttempt,
+          }, {
+            label: '\u8F6E\u56DE' + loopIndex + '\u00B7\u65E5\u8BB0\u751F\u6210',
+            status: 'error', error: 'empty_response',
+            durationMs: Date.now() - _nbT0,
+            loopPhase: 'loop_' + loopIndex + '_notebook',
+            sourceIds: [window.AuditLog.getLoopMemoryLogId(), _tonePresetLogId].filter(Boolean),
+          });
+        } catch (_) {}
+      }
+      return { body: null, error: "empty_response", logId: _nbEmptyLogId };
     }
     const normalized = normalizeNotebookBody(raw.body);
     if (!normalized) {
-      return { body: null, error: "invalid_body" };
+      let _nbInvalidLogId = null;
+      if (window.AuditLog) {
+        try {
+          _nbInvalidLogId = await window.AuditLog.write('diary_generation', {
+            loop_index: loopIndex, tone_preset_log_id: _tonePresetLogId,
+            loop_memory_input: opt.loopMemory || '', previous_note_tail: extractPreviousNoteTail(previousNotebook),
+            system_prompt_full: sp, raw_ai_output: JSON.stringify(raw), raw_body: raw.body || null,
+            normalized_body: null, source_out: 'fallback', retry_attempt: retryAttempt,
+          }, {
+            label: '\u8F6E\u56DE' + loopIndex + '\u00B7\u65E5\u8BB0\u751F\u6210',
+            status: 'error', error: 'invalid_body',
+            durationMs: Date.now() - _nbT0,
+            loopPhase: 'loop_' + loopIndex + '_notebook',
+            sourceIds: [window.AuditLog.getLoopMemoryLogId(), _tonePresetLogId].filter(Boolean),
+          });
+        } catch (_) {}
+      }
+      return { body: null, error: "invalid_body", logId: _nbInvalidLogId };
     }
-    return { body: normalized, error: null };
+    /* 成功 */
+    let _nbOkLogId = null;
+    if (window.AuditLog) {
+      try {
+        const _nbOkSrcIds = [
+          window.AuditLog.getLoopMemoryLogId(),
+          _tonePresetLogId,
+          window.AuditLog.getDiaryLogId(),
+          opt.prevFailedLogId || null,
+        ].filter(Boolean);
+        _nbOkLogId = await window.AuditLog.write('diary_generation', {
+          loop_index:        loopIndex,
+          tone_preset_log_id: _tonePresetLogId,
+          loop_memory_input: opt.loopMemory || '',
+          previous_note_tail: extractPreviousNoteTail(previousNotebook),
+          system_prompt_full: sp,
+          raw_ai_output:     JSON.stringify(raw),
+          raw_body:          raw.body,
+          normalized_body:   normalized,
+          source_out:        'ai',
+          retry_attempt:     retryAttempt,
+        }, {
+          label:     '\u8F6E\u56DE' + loopIndex + '\u00B7\u65E5\u8BB0\u751F\u6210',
+          status:    'ok',
+          durationMs: Date.now() - _nbT0,
+          loopPhase: 'loop_' + loopIndex + '_notebook',
+          sourceIds: _nbOkSrcIds,
+        });
+        if (_nbOkLogId) window.AuditLog.setDiaryLogId(_nbOkLogId);
+      } catch (_nbOkErr) {
+        console.warn('[AuditLog] diary_generation log failed', _nbOkErr);
+      }
+    }
+    /* ─────────────────────────────────────────────────────────── */
+    return { body: normalized, error: null, logId: _nbOkLogId };
   }
 
   async function runEndingPostStage(characters, histories, p3Results, participationMap, callGemini, signal) {
@@ -1331,6 +1761,84 @@
     await Promise.all([memoryTask, subconsciousTask, notebookTask]);
   }
 
+  async function retryCurrentLoopNotebookGeneration() {
+    if (!window.LoopState || !window.NotebookConfig || !DialogueState) {
+      return { ok: false, error: "missing_dependencies" };
+    }
+    if (typeof DialogueState.callGemini !== "function") {
+      return { ok: false, error: "missing_call_gemini" };
+    }
+    if (typeof window.LoopState.getNotebookEntries !== "function" ||
+        typeof window.LoopState.getLoopIndex !== "function" ||
+        typeof window.LoopState.replaceLastNotebookEntry !== "function") {
+      return { ok: false, error: "missing_loop_api" };
+    }
+
+    const allEntries = window.LoopState.getNotebookEntries() || [];
+    const lastIndex = allEntries.length - 1;
+    if (lastIndex < 0) return { ok: false, error: "no_entry" };
+
+    const targetEntry = allEntries[lastIndex] || {};
+    const loopIndex = Number(targetEntry.loopIndex);
+    if (!Number.isFinite(loopIndex)) {
+      return { ok: false, error: "invalid_loop_index" };
+    }
+
+    const tone = window.NotebookConfig.getTonePresetFor(loopIndex);
+    if (!tone) return { ok: false, error: "missing_tone_preset" };
+
+    const previousNotebook = allEntries.slice(0, lastIndex);
+    let loopMemory = endingState.loopSummary || "";
+    if (!loopMemory && typeof window.LoopState.getLastLoopSummary === "function") {
+      loopMemory = window.LoopState.getLastLoopSummary() || "";
+    }
+    if (!loopMemory) {
+      loopMemory = "（本轮记忆整理未完成或为空）";
+    }
+    const signal = endingAbortController ? endingAbortController.signal : undefined;
+
+    try {
+      const result = await runNotebookGeneration({
+        loopIndex,
+        tonePreset: tone,
+        loopMemory,
+        previousNotebook,
+        callGemini: DialogueState.callGemini,
+        signal,
+        retryAttempt: 1,
+      });
+      if (result && result.body) {
+        window.LoopState.replaceLastNotebookEntry({
+          loopIndex,
+          headerLabel: tone.headerLabel,
+          body: result.body,
+          tonePreset: tone,
+          generatedAt: new Date().toISOString(),
+          source: "ai",
+          error: null,
+        });
+        return { ok: true, body: result.body, error: null };
+      }
+
+      const errCode = (result && result.error) ? result.error : "retry_failed";
+      window.LoopState.replaceLastNotebookEntry({
+        loopIndex,
+        headerLabel: tone.headerLabel,
+        body: "",
+        tonePreset: tone,
+        generatedAt: new Date().toISOString(),
+        source: "fallback",
+        error: errCode,
+      });
+      return { ok: false, error: errCode };
+    } catch (err) {
+      if (!isAbortError(err)) {
+        console.error("[ending.js] retry current loop notebook failed", err);
+      }
+      return { ok: false, error: isAbortError(err) ? "aborted" : "retry_exception" };
+    }
+  }
+
   /* ═══════════════════════════════════════════════════════════
      PRODUCER  —  sequential API calls, fills slots reactively
   ═══════════════════════════════════════════════════════════ */
@@ -1420,6 +1928,36 @@
         if (signal && signal.aborted) return;
         p3Results[c.id] = r;
         fillSlot(entry.slot, r.action || "", r.line || "");
+        /* ─── AuditLog: ending_stage3 成功 ──────────────────────── */
+        if (window.AuditLog) {
+          (async function () {
+            try {
+              const _s3SrcIds = window.AuditLog.getAllDialogueLogIds(c.id);
+              const _s3PromptId = await window.AuditLog.registerPromptArtifact(
+                c.id, c.systemPrompt || ''
+              );
+              if (_s3PromptId) _s3SrcIds.push(_s3PromptId);
+              const _s3LogId = await window.AuditLog.write('ending_stage3', {
+                character_id:       c.id,
+                participation_flags: entry.participation,
+                system_prompt_full: sp,
+                user_content:       uc,
+                raw_ai_output:      JSON.stringify(r),
+                parsed_action:      r.action || '',
+                parsed_line:        r.line   || '',
+                parsed_reason:      r.reason || '',
+              }, {
+                label:     (c.name || c.id) + '\u00B7\u7EC8\u5C40\u9636\u6BB53',
+                loopPhase: 'loop_' + getCurrentLoopIndex() + '_stage3',
+                sourceIds: _s3SrcIds,
+              });
+              if (_s3LogId) window.AuditLog.setStage3LogId(c.id, _s3LogId);
+            } catch (_s3Err) {
+              console.warn('[AuditLog] ending_stage3 log failed', _s3Err);
+            }
+          })();
+        }
+        /* ─────────────────────────────────────────────────────── */
       } catch (err) {
         if (isAbortError(err)) {
           console.log(`[abort] ending stage 3 cancelled for ${c.id}`);
@@ -1430,6 +1968,26 @@
         const errMsg = err && err.message ? String(err.message) : String(err);
         p3Results[c.id] = { action: `(获取失败 · ${errType})`, line: errMsg.slice(0, 60), reason: errMsg };
         fillSlot(entry.slot, `(获取失败 · ${errType})`, errMsg.slice(0, 60));
+        /* ─── AuditLog: ending_stage3 失败 ──────────────────────── */
+        if (window.AuditLog) {
+          window.AuditLog.write('ending_stage3', {
+            character_id:       c.id,
+            participation_flags: entry.participation,
+            system_prompt_full: null,
+            user_content:       null,
+            raw_ai_output:      null,
+            parsed_action:      null,
+            parsed_line:        null,
+            parsed_reason:      null,
+          }, {
+            label:     (c.name || c.id) + '\u00B7\u7EC8\u5C40\u9636\u6BB53',
+            status:    'error',
+            error:     errMsg,
+            loopPhase: 'loop_' + getCurrentLoopIndex() + '_stage3',
+            sourceIds: window.AuditLog.getAllDialogueLogIds(c.id),
+          }).catch(function (_) {});
+        }
+        /* ─────────────────────────────────────────────────────── */
       }
     }
     endingState.stage3Results = p3Results;
@@ -1502,5 +2060,6 @@
     setupEndingButton();
   }
 
+  endingState.retryCurrentLoopNotebookGeneration = retryCurrentLoopNotebookGeneration;
   window.EndingState = endingState;
 })();

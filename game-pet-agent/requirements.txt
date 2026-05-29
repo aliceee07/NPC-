@@ -1,0 +1,5 @@
+openai>=1.35.0
+Pillow>=10.3.0
+pyautogui>=0.9.54
+requests>=2.32.0
+pynput>=1.7.7

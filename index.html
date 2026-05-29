@@ -35,7 +35,7 @@
         </div>
         <div class="config-row">
           <label for="api-key-input">API Key</label>
-          <input id="api-key-input" type="password" placeholder="粘贴 API Key（仅保存在内存）" />
+          <input id="api-key-input" type="password" placeholder="粘贴 API Key（保存在本机浏览器）" />
         </div>
         <div class="config-row">
           <label for="model-name-input">模型</label>
@@ -154,6 +154,10 @@
         <div class="notebook-page-body-wrap">
           <article id="notebook-page-body" class="notebook-page-body"></article>
           <p id="notebook-page-fallback" class="notebook-page-fallback" hidden>这一轮的记忆模糊了……</p>
+          <div id="notebook-retry-row" class="notebook-retry-row" hidden>
+            <button type="button" id="notebook-retry-btn" class="notebook-retry-btn">重新回忆</button>
+            <span id="notebook-retry-status" class="notebook-retry-status" aria-live="polite"></span>
+          </div>
         </div>
         <footer class="notebook-modal-footer">
           <button type="button" class="notebook-page-btn" id="notebook-prev"
@@ -170,13 +174,31 @@
   <!-- config.local.js 在 .gitignore 里，不会上传 GitHub；
        不存在时页面不报错，降级到输入框手动填写 -->
   <script src="config.local.js" onerror="void 0"></script>
-  <script src="characters.js?v=20260518"></script>
-  <script src="notebook-config.js?v=20260519"></script>
-  <script src="loop-script.js?v=20260519"></script>
+  <script src="characters.js?v=20260520"></script>
+  <script src="stage-catalog.js?v=20260521"></script>
+  <script src="npc-loop-memory.js?v=20260521"></script>
+  <script src="notebook-config.js?v=20260521"></script>
+  <script src="loop-script.js?v=20260521"></script>
+  <script src="progression-engine.js?v=20260521"></script>
   <script src="ending-participation.js?v=20260519"></script>
-  <script src="dialogue.js?v=20260518"></script>
-  <script src="ending.js?v=20260519"></script>
-  <script src="loop.js?v=20260518"></script>
+  <!-- Phase 3：CloudSync / UserSession / SaveAdapter 在 audit-log 之前加载 -->
+  <script src="cloud-sync.js?v=20260521"></script>
+  <script src="user-session.js?v=20260521"></script>
+  <script src="save-adapter.js?v=20260521"></script>
+  <script src="audit-log.js?v=20260521"></script>
+  <script src="log-restore.js?v=20260528"></script>
+  <script src="dialogue/core.js?v=20260527"></script>
+  <script src="dialogue/output.js?v=20260527"></script>
+  <script src="dialogue/request.js?v=20260527"></script>
+  <script src="dialogue/provider.js?v=20260527"></script>
+  <script src="dialogue/render.js?v=20260527"></script>
+  <script src="dialogue/audit.js?v=20260528"></script>
+  <script src="dialogue/flow.js?v=20260528"></script>
+  <script src="dialogue/settings.js?v=20260527"></script>
+  <script src="dialogue/public-api.js?v=20260527"></script>
+  <script src="dialogue.js?v=20260527"></script>
+  <script src="ending.js?v=20260521"></script>
+  <script src="loop.js?v=20260521"></script>
 
   <script>
     /* F-004b：笔记本入口（第 1 周目隐藏 / 第 2+ 周目图标按钮 + 弹层翻页）。
@@ -194,28 +216,37 @@
       var headerEl = document.getElementById('notebook-page-header');
       var bodyEl   = document.getElementById('notebook-page-body');
       var fbEl     = document.getElementById('notebook-page-fallback');
+      var retryRow = document.getElementById('notebook-retry-row');
+      var retryBtn = document.getElementById('notebook-retry-btn');
+      var retryStatusEl = document.getElementById('notebook-retry-status');
       var indEl    = document.getElementById('notebook-page-indicator');
 
       if (!panel || !overlay || !modal || !openBtn) return;
 
-      var loopIdx = 1;
-      try {
-        if (window.LoopState && typeof window.LoopState.getLoopIndex === 'function') {
-          var v = window.LoopState.getLoopIndex();
-          if (typeof v === 'number' && isFinite(v)) loopIdx = v;
-        }
-      } catch (_) { loopIdx = 1; }
+      /* 须在 LoopState.start() / tryAutoImport 之后再次调用（见 loop.js finishLoopSelect）。 */
+      function resetNotebookIconVisualState() {
+        if (!openBtn) return;
+        cleanAnimClass(openBtn, 'nb-closing');
+        cleanAnimClass(openBtn, 'nb-opening-back');
+        openBtn.style.opacity = '';
+        openBtn.style.transform = '';
+      }
 
-      if (loopIdx <= 1) {
-        panel.hidden = true;
-        panel.style.display = 'none';
-      } else {
-        panel.hidden = false;
-        panel.style.display = '';
+      function syncNotebookPanelVisibility() {
+        var loopIdx = getCurrentLoopIndexSafe();
+        if (loopIdx <= 1) {
+          panel.hidden = true;
+          panel.style.display = 'none';
+        } else {
+          panel.hidden = false;
+          panel.style.display = '';
+          if (!isOpen) resetNotebookIconVisualState();
+        }
       }
 
       var currentPage = 0;
       var isOpen = false;
+      var notebookRetryInFlight = false;
 
       function getEntries() {
         try {
@@ -253,6 +284,47 @@
         return '第 ' + fallbackIndex + ' 次轮回';
       }
 
+      function setNotebookRetryStatus(text, isError) {
+        if (!retryStatusEl) return;
+        retryStatusEl.textContent = text || '';
+        retryStatusEl.classList.toggle('is-error', !!isError);
+      }
+
+      function getCurrentLoopIndexSafe() {
+        try {
+          if (window.LoopState && typeof window.LoopState.getLoopIndex === 'function') {
+            return window.LoopState.getLoopIndex();
+          }
+        } catch (_) {}
+        return 1;
+      }
+
+      function isNotebookRetryable(entry, pageIndex, total) {
+        if (!entry || total <= 0) return false;
+        /* 仅笔记本最后一页可重试 */
+        if (pageIndex !== total - 1) return false;
+        var body = (typeof entry.body === 'string') ? entry.body : '';
+        if (body.trim().length > 0) return false;
+        var source = (typeof entry.source === 'string') ? entry.source : '';
+        var hasError = (typeof entry.error === 'string' && entry.error.trim().length > 0);
+        return source === 'fallback' || hasError;
+      }
+
+      function updateNotebookRetryUi(entry, pageIndex, total) {
+        if (!retryRow || !retryBtn) return;
+        var canRetry = isNotebookRetryable(entry, pageIndex, total);
+        retryRow.hidden = !canRetry;
+        retryBtn.disabled = notebookRetryInFlight;
+        retryBtn.setAttribute('aria-disabled', notebookRetryInFlight ? 'true' : 'false');
+        if (!canRetry) {
+          setNotebookRetryStatus('', false);
+          return;
+        }
+        if (!notebookRetryInFlight && (!retryStatusEl || !retryStatusEl.textContent)) {
+          setNotebookRetryStatus('日记生成失败后可点击重新回忆。', false);
+        }
+      }
+
       function renderNotebookPage(pageIndex) {
         var entries = getEntries();
         var total = entries.length;
@@ -264,6 +336,7 @@
           indEl.textContent = '0 / 0';
           prevBtn.disabled = true;
           nextBtn.disabled = true;
+          updateNotebookRetryUi(null, 0, 0);
           return;
         }
 
@@ -288,6 +361,7 @@
         indEl.textContent = (pageIndex + 1) + ' / ' + total;
         prevBtn.disabled = (pageIndex <= 0);
         nextBtn.disabled = (pageIndex >= total - 1);
+        updateNotebookRetryUi(entry, pageIndex, total);
       }
 
       function goNotebookPage(delta) {
@@ -310,24 +384,135 @@
         return entries.length - 1;
       }
 
+      /* #3 动画辅助：清理动画 class，避免重复触发 */
+      function cleanAnimClass(el, cls) {
+        if (!el) return;
+        el.classList.remove(cls);
+        void el.offsetWidth; // reflow trigger
+      }
+
       function openNotebook(pageOpt) {
         if (isOpen) {
           renderNotebookPage(resolvePageIndex(pageOpt));
           return;
         }
         isOpen = true;
+
+        /* #3 open 动画：图标缩小 → overlay 放大出现 */
+        cleanAnimClass(openBtn, 'nb-opening-back');
+        openBtn.classList.add('nb-closing');
         overlay.hidden = false;
+        cleanAnimClass(overlay, 'nb-leave');
+        overlay.classList.add('nb-enter');
+        overlay.addEventListener('animationend', function onEnter() {
+          overlay.removeEventListener('animationend', onEnter);
+          overlay.classList.remove('nb-enter');
+        });
+
         renderNotebookPage(resolvePageIndex(pageOpt));
+
+        /* #4 第二周目首次开笔记本：笔写字动画 */
+        var li2 = getCurrentLoopIndexSafe();
+        if (li2 === 2) {
+          var firstOpenKey = 'npc_notebook_loop2_opened';
+          var hasOpened = false;
+          try { hasOpened = localStorage.getItem(firstOpenKey) === '1'; } catch(_) {}
+          if (!hasOpened) {
+            try { localStorage.setItem(firstOpenKey, '1'); } catch(_) {}
+            setTimeout(function() { runPenWriteAnimation(); }, 400);
+          }
+        }
+
         setTimeout(function () {
           if (closeBtn && typeof closeBtn.focus === 'function') closeBtn.focus();
         }, 0);
       }
 
+      function finishNotebookCloseVisual() {
+        if (!overlay) return;
+        overlay.classList.remove('nb-leave');
+        overlay.hidden = true;
+        resetNotebookIconVisualState();
+      }
+
       function closeNotebook() {
         if (!isOpen) return;
         isOpen = false;
-        overlay.hidden = true;
+
+        /* #3 close 动画：overlay 缩小消失 → 图标放大回来 */
+        cleanAnimClass(overlay, 'nb-enter');
+        overlay.classList.add('nb-leave');
+
+        var closeFinished = false;
+        function completeClose() {
+          if (closeFinished) return;
+          closeFinished = true;
+          finishNotebookCloseVisual();
+        }
+
+        function onLeave(e) {
+          if (e && e.target !== overlay) return;
+          overlay.removeEventListener('animationend', onLeave);
+          completeClose();
+        }
+        overlay.addEventListener('animationend', onLeave);
+        /* animationend 偶发不触发时仍恢复右下角图标 */
+        setTimeout(completeClose, 450);
+
         if (openBtn && typeof openBtn.focus === 'function') openBtn.focus();
+      }
+
+      /* #4 笔写字动画实现 */
+      function runPenWriteAnimation() {
+        var pageBodyEl = document.getElementById('notebook-page-body');
+        if (!pageBodyEl) return;
+        var originalText = pageBodyEl.innerText || pageBodyEl.textContent || '';
+        if (!originalText.trim()) return;
+
+        /* 创建笔光标 */
+        var pen = document.createElement('span');
+        pen.className = 'nb-pen-cursor';
+        pen.textContent = '✒️';
+        pageBodyEl.style.position = 'relative';
+        pageBodyEl.appendChild(pen);
+
+        /* 隐藏正文，准备打字机显示 */
+        var fullHtml = pageBodyEl.innerHTML;
+        /* 去掉笔元素再取文字 */
+        pageBodyEl.removeChild(pen);
+        var textContent = pageBodyEl.innerText || pageBodyEl.textContent || '';
+        pageBodyEl.innerHTML = '';
+        pageBodyEl.style.position = 'relative';
+        pageBodyEl.appendChild(pen);
+
+        var wrapper = document.createElement('span');
+        wrapper.className = 'nb-typewriter-wrap';
+        pageBodyEl.appendChild(wrapper);
+
+        /* 笔移入动画 */
+        pen.classList.add('nb-pen-animating');
+
+        /* 打字机效果：每 40ms 显示一个字 */
+        var chars = Array.from(textContent);
+        var idx = 0;
+        var PEN_DELAY_MS = 800;  // 笔移动时间
+        var CHAR_INTERVAL_MS = 40;
+
+        setTimeout(function startTyping() {
+          var timer = setInterval(function () {
+            if (idx < chars.length) {
+              wrapper.textContent += chars[idx];
+              idx++;
+            } else {
+              clearInterval(timer);
+              /* 笔淡出 */
+              pen.style.opacity = '0';
+              setTimeout(function() {
+                if (pen.parentNode) pen.parentNode.removeChild(pen);
+              }, 400);
+            }
+          }, CHAR_INTERVAL_MS);
+        }, PEN_DELAY_MS);
       }
 
       function handleNotebookKeydown(e) {
@@ -353,12 +538,45 @@
         }
       }
 
+      async function handleNotebookRetryClick() {
+        if (notebookRetryInFlight) return;
+        var entries = getEntries();
+        if (!entries.length) return;
+        var target = entries[currentPage];
+        if (!isNotebookRetryable(target, currentPage, entries.length)) return;
+        if (!window.EndingState ||
+            typeof window.EndingState.retryCurrentLoopNotebookGeneration !== 'function') {
+          setNotebookRetryStatus('当前阶段无法重新回忆，请在终局后重试。', true);
+          return;
+        }
+
+        notebookRetryInFlight = true;
+        retryBtn.disabled = true;
+        setNotebookRetryStatus('正在重新回忆，请稍候……', false);
+
+        try {
+          var result = await window.EndingState.retryCurrentLoopNotebookGeneration();
+          if (result && result.ok) {
+            setNotebookRetryStatus('已重新回忆成功。', false);
+          } else {
+            setNotebookRetryStatus('重新回忆失败，请稍后再试。', true);
+          }
+          renderNotebookPage(currentPage);
+        } catch (_) {
+          setNotebookRetryStatus('重新回忆失败，请稍后再试。', true);
+        } finally {
+          notebookRetryInFlight = false;
+          updateNotebookRetryUi(getEntries()[currentPage], currentPage, getEntries().length);
+        }
+      }
+
       if (openBtn) {
         openBtn.addEventListener('click', function () { openNotebook('last'); });
       }
       if (closeBtn) closeBtn.addEventListener('click', closeNotebook);
       if (prevBtn) prevBtn.addEventListener('click', function () { goNotebookPage(-1); });
       if (nextBtn) nextBtn.addEventListener('click', function () { goNotebookPage(1); });
+      if (retryBtn) retryBtn.addEventListener('click', function () { void handleNotebookRetryClick(); });
 
       overlay.addEventListener('click', function (e) {
         if (e.target === overlay) closeNotebook();
@@ -373,7 +591,10 @@
         },
         close: closeNotebook,
         isOpen: function () { return isOpen; },
+        syncPanelVisibility: syncNotebookPanelVisibility,
       };
+
+      syncNotebookPanelVisibility();
     })();
   </script>
 
@@ -393,7 +614,7 @@
         2: [
           "你又一次回到了这个地方，我好像忘了告诉你什么了",
           "拿上你的笔记本，你可以用它记录你看见的事情",
-          "还有这把刀，相信我，你会用上的",
+          "再多看一眼吧，也许有些东西，你上一次走得太快没看清",
           "现在，先写下上一周目的记录吧，也许我们会发现什么",
         ],
         3: [
@@ -404,21 +625,21 @@
         ],
         4: [
           "又回来了。",
-          "这是第几次了。",
-          "他们还在那里。",
-          "这次问什么？",
+          "这一次走得没那么慢了。",
+          "我终于想起来了。",
+          "……所以接下来，要做什么？",
         ],
         5: [
           "又回来了。",
-          "这是第几次了。",
-          "他们还在那里。",
-          "他们为什么还在那里。",
+          "这一次，我不打算再退。",
+          "你不感到痛苦吗？",
+          "——为什么还要一遍遍走这条街。",
         ],
         6: [
           "又回来了。",
-          "这是第几次了。",
-          "他们还在那里。",
-          "要不要问点什么？",
+          "我什么都想起来了。",
+          "可越想起来，越分不清——",
+          "到底什么才是真相？",
         ],
       };
       var INTRO_LINES_DEFAULT = [
@@ -529,6 +750,14 @@
             if (e.target !== overlay) return;
             overlay.removeEventListener('transitionend', onEnd);
             if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+            /* #2 第二周目入口：intro 退场后自动打开笔记本 */
+            try {
+              var li = (window.LoopState && typeof window.LoopState.getLoopIndex === 'function')
+                ? window.LoopState.getLoopIndex() : 1;
+              if (li >= 2 && window.NPCNotebookUi && typeof window.NPCNotebookUi.open === 'function') {
+                setTimeout(function() { window.NPCNotebookUi.open({ page: 'last' }); }, 200);
+              }
+            } catch (_) {}
           });
         }, 300);
       }
@@ -604,6 +833,236 @@
           localStorage.setItem('npc_api_debug', cb.checked ? '1' : '0');
         } catch (_) { /* ignore */ }
       });
+    })();
+  </script>
+
+  <!-- Phase 3：登录入口遮罩 + 启动控制器（R-21 反竞态：登录完成后才调 LoopState.start()） -->
+  <script>
+    (function () {
+
+      /* ─────────────────────────────────────────────────────────────
+         本地跳过登录模式（config.local.js 中设置 window.NPC_SKIP_LOGIN = true）
+         或未配置云端（无 NPC_CLOUD_BASE_URL）时，直接启动游戏
+      ───────────────────────────────────────────────────────────── */
+      function shouldSkipLogin() {
+        if (window.NPC_SKIP_LOGIN) return true;
+        // 无云端配置时降级为本地模式
+        if (!window.NPC_CLOUD_BASE_URL || typeof window.NPC_CLOUD_BASE_URL !== 'string' ||
+            window.NPC_CLOUD_BASE_URL.trim().length === 0) return true;
+        // 已有有效 session（localStorage 中有 user_id 和 session_token）
+        if (window.UserSession && window.UserSession.isLoggedIn()) return true;
+        return false;
+      }
+
+      /* ─────────────────────────────────────────────────────────────
+         创建登录遮罩 DOM
+      ───────────────────────────────────────────────────────────── */
+      function createLoginOverlay() {
+        var ov = document.createElement('div');
+        ov.id = 'login-overlay';
+        ov.style.cssText = [
+          'position:fixed;top:0;left:0;width:100%;height:100%;',
+          'background:#000;z-index:2000;display:flex;',
+          'align-items:center;justify-content:center;',
+          'font-family:inherit;',
+        ].join('');
+        return ov;
+      }
+
+      function dismissLoginOverlay(ov, onDone) {
+        ov.style.transition = 'opacity 0.5s';
+        ov.style.opacity = '0';
+        setTimeout(function () {
+          if (ov.parentNode) ov.parentNode.removeChild(ov);
+          if (onDone) onDone();
+        }, 500);
+      }
+
+      /* ─────────────────────────────────────────────────────────────
+         入口选择（「继续上一段记忆」/ 「开启新的记忆」）
+      ───────────────────────────────────────────────────────────── */
+      function showLoginFlow(onComplete) {
+        var ov = createLoginOverlay();
+        document.body.appendChild(ov);
+
+        var box = document.createElement('div');
+        box.style.cssText = [
+          'max-width:380px;width:90%;padding:40px 32px;',
+          'background:#111;border:1px solid #333;border-radius:8px;',
+          'color:#ddd;text-align:center;',
+        ].join('');
+
+        var title = document.createElement('p');
+        title.style.cssText = 'font-size:1.2em;margin:0 0 32px;letter-spacing:0.05em;';
+        title.textContent = '你站在这条街上。';
+
+        var btnA = document.createElement('button');
+        btnA.textContent = '继续上一段记忆';
+        btnA.style.cssText = _btnStyle(false);
+
+        var btnB = document.createElement('button');
+        btnB.textContent = '开启新的记忆';
+        btnB.style.cssText = _btnStyle(true);
+
+        var statusEl = document.createElement('p');
+        statusEl.style.cssText = 'margin:16px 0 0;font-size:0.85em;color:#888;min-height:1.4em;';
+
+        box.appendChild(title);
+        box.appendChild(btnA);
+        box.appendChild(btnB);
+        box.appendChild(statusEl);
+        ov.appendChild(box);
+
+        function _btnStyle(dim) {
+          return [
+            'display:block;width:100%;padding:12px;margin-bottom:12px;',
+            'background:' + (dim ? '#1a1a1a' : '#222') + ';',
+            'color:' + (dim ? '#888' : '#ccc') + ';',
+            'border:1px solid #444;border-radius:4px;cursor:pointer;',
+            'font-size:1em;letter-spacing:0.03em;',
+          ].join('');
+        }
+
+        function showPinForm(isNew) {
+          box.innerHTML = '';
+          var formTitle = document.createElement('p');
+          formTitle.style.cssText = 'font-size:1em;margin:0 0 20px;color:#aaa;';
+          formTitle.textContent = isNew ? '起一个你记得住的名字' : '请输入昵称与密码';
+          box.appendChild(formTitle);
+
+          var nicknameInput = document.createElement('input');
+          nicknameInput.type = 'text';
+          nicknameInput.placeholder = '昵称（最多 20 字）';
+          nicknameInput.maxLength = 20;
+          nicknameInput.style.cssText = _inputStyle();
+          box.appendChild(nicknameInput);
+
+          var pinInput = document.createElement('input');
+          pinInput.type = 'password';
+          pinInput.placeholder = '4 位数字密码';
+          pinInput.maxLength = 4;
+          pinInput.inputMode = 'numeric';
+          pinInput.style.cssText = _inputStyle();
+          box.appendChild(pinInput);
+
+          var confirmBtn = document.createElement('button');
+          confirmBtn.textContent = isNew ? '创建记忆' : '进入';
+          confirmBtn.style.cssText = _btnStyle(false);
+          box.appendChild(confirmBtn);
+
+          var err = document.createElement('p');
+          err.style.cssText = 'margin:8px 0 0;font-size:0.82em;color:#c66;min-height:1.2em;';
+          box.appendChild(err);
+
+          function _inputStyle() {
+            return [
+              'display:block;width:100%;box-sizing:border-box;',
+              'padding:10px 12px;margin-bottom:12px;',
+              'background:#1a1a1a;color:#ddd;border:1px solid #444;border-radius:4px;',
+              'font-size:0.95em;',
+            ].join('');
+          }
+
+          async function doLogin() {
+            var nickname = nicknameInput.value.trim();
+            var pin = pinInput.value.trim();
+            if (!nickname) { err.textContent = '请输入昵称'; return; }
+            if (!/^\d{4}$/.test(pin)) { err.textContent = 'PIN 必须是 4 位数字'; return; }
+
+            confirmBtn.disabled = true;
+            err.textContent = '正在验证……';
+
+            var result = await window.UserSession.login(nickname, pin);
+            confirmBtn.disabled = false;
+
+            if (!result || !result.ok) {
+              var msg = result && result.error === 'wrong_pin' ? '密码错误，请重试。'
+                : result && result.error === 'network_error' ? '无法连接服务器，请检查网络。'
+                : '登录失败，请重试。';
+              err.textContent = msg;
+              return;
+            }
+
+            err.textContent = '';
+
+            // 「继续上一段」：先拉云端存档，无存档/失败再静默兜底走本地日志续接
+            if (!isNew) {
+              err.style.color = '#888';
+              err.textContent = '正在读取记忆……';
+              var cloudArchive = null;
+              try {
+                var loadResult = await window.SaveAdapter.load();
+                if (loadResult && loadResult.ok && loadResult.archive) {
+                  cloudArchive = loadResult.archive;
+                }
+              } catch (cloudErr) {
+                console.warn('[login] SaveAdapter.load failed:', cloudErr);
+              }
+
+              if (!cloudArchive) {
+                // 云端无存档或读取失败 → 尝试本地日志续接
+                if (window.LogRestore &&
+                    typeof window.LogRestore.resolveLatestRestore === 'function') {
+                  try {
+                    var restoreResult = await window.LogRestore.resolveLatestRestore();
+                    if (restoreResult && restoreResult.archive && restoreResult.targetLoopIndex) {
+                      try {
+                        if (window.AuditLog &&
+                            typeof window.AuditLog.applySessionId === 'function' &&
+                            restoreResult.sessionId) {
+                          window.AuditLog.applySessionId(restoreResult.sessionId);
+                        }
+                      } catch (sessionErr) {
+                        console.warn('[login] applySessionId failed:', sessionErr);
+                      }
+                      try {
+                        sessionStorage.setItem(
+                          'npc_pending_loop',
+                          JSON.stringify(restoreResult.archive)
+                        );
+                      } catch (storageErr) {
+                        console.warn('[login] sessionStorage write failed:', storageErr);
+                      }
+                    }
+                  } catch (restoreErr) {
+                    console.warn('[login] LogRestore fallback failed:', restoreErr);
+                  }
+                }
+              }
+            }
+
+            dismissLoginOverlay(ov, onComplete);
+          }
+
+          confirmBtn.addEventListener('click', doLogin);
+          pinInput.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') doLogin();
+          });
+
+          setTimeout(function () { nicknameInput.focus(); }, 0);
+        }
+
+        btnA.addEventListener('click', function () { showPinForm(false); });
+        btnB.addEventListener('click', function () { showPinForm(true); });
+      }
+
+      /* ─────────────────────────────────────────────────────────────
+         主流程入口（页面加载后执行）
+      ───────────────────────────────────────────────────────────── */
+      function startApp() {
+        if (window.LoopState && typeof window.LoopState.start === 'function') {
+          window.LoopState.start();
+        }
+      }
+
+      if (shouldSkipLogin()) {
+        // 本地/已登录：直接启动游戏
+        startApp();
+      } else {
+        // 显示登录遮罩，登录完成后启动游戏
+        showLoginFlow(startApp);
+      }
+
     })();
   </script>
 </body>
